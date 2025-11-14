@@ -1,4 +1,5 @@
 import axios from "axios";
+import User from "../models/User.js";
 
 function clamp(v, lo, hi) {
   if (typeof v !== "number" || Number.isNaN(v)) return lo;
@@ -18,6 +19,30 @@ function formatCatalog(items = []) {
   }
 }
 
+// Проверка активности подписки
+const isSubscriptionActive = (user) => {
+  if (!user.isPro) return false;
+  if (!user.subscriptionExpires) return true;
+  return new Date() < new Date(user.subscriptionExpires);
+};
+
+// Обновить статус подписки
+const updateUserStatus = async (user) => {
+  if (!isSubscriptionActive(user) && user.isPro) {
+    user.isPro = false;
+    await user.save();
+  }
+  return user;
+};
+
+// Проверить нужно ли сбросить счётчик
+const shouldResetMessages = (user) => {
+  const now = new Date();
+  const resetDate = new Date(user.messagesResetDate);
+  const daysDiff = (now - resetDate) / (1000 * 60 * 60 * 24);
+  return daysDiff >= 30;
+};
+
 export async function aiReply(req, res) {
   try {
     const {
@@ -29,8 +54,56 @@ export async function aiReply(req, res) {
       catalog = [],
       temperature = 0.3,
       maxTokens = 256,
+      deviceId, // ← ДОБАВИЛИ deviceId
     } = req.body || {};
 
+    // ========== ПРОВЕРКА ЛИМИТА ==========
+    if (deviceId) {
+      const user = await User.findOne({ where: { deviceId } });
+
+      if (user) {
+        // Обновить статус подписки
+        const updatedUser = await updateUserStatus(user);
+
+        // Проверить нужно ли сбросить счётчик
+        if (shouldResetMessages(updatedUser)) {
+          updatedUser.messagesThisMonth = 0;
+          updatedUser.messagesResetDate = new Date();
+          await updatedUser.save();
+        }
+
+        // Проверить лимит для FREE пользователей
+        if (!updatedUser.isPro) {
+          const FREE_LIMIT = 50;
+
+          if (updatedUser.messagesThisMonth >= FREE_LIMIT) {
+            console.log(
+              `❌ Message limit reached for device: ${deviceId} (${updatedUser.messagesThisMonth}/${FREE_LIMIT})`
+            );
+            return res.status(403).json({
+              error: "Message limit reached",
+              reply:
+                "⚠️ Лимит FREE версии исчерпан (50 сообщений/месяц). Перейдите на PRO для безлимитных ответов! 🚀",
+              limit: {
+                used: updatedUser.messagesThisMonth,
+                total: FREE_LIMIT,
+                isPro: false,
+              },
+            });
+          }
+        }
+
+        console.log(
+          `✅ Message allowed for device: ${deviceId} (${
+            updatedUser.messagesThisMonth + 1
+          }/${updatedUser.isPro ? "∞" : "50"})`
+        );
+      } else {
+        console.warn(`⚠️ User not found for deviceId: ${deviceId}`);
+      }
+    }
+
+    // ========== OPENAI REQUEST ==========
     const sys = [
       systemPrompt,
       "Правила: 1) 1–3 предложения, 2) без Markdown, 3) язык ответа = язык сообщения, 4) не выдумывай факты.",
@@ -68,6 +141,19 @@ export async function aiReply(req, res) {
     );
 
     const reply = resp?.data?.choices?.[0]?.message?.content?.trim() || "";
+
+    // ========== УВЕЛИЧИТЬ СЧЁТЧИК ==========
+    if (deviceId) {
+      const user = await User.findOne({ where: { deviceId } });
+      if (user) {
+        user.messagesThisMonth += 1;
+        await user.save();
+        console.log(
+          `📈 Message count increased: ${user.messagesThisMonth} for device: ${deviceId}`
+        );
+      }
+    }
+
     res.json({ reply });
   } catch (e) {
     const status = e?.response?.status || 500;
