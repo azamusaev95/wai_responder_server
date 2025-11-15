@@ -3,9 +3,9 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { aiReply } from "./controllers/aiController.js";
-import { generatePrompt } from "./controllers/promptGenerator.js";
 import userRoutes from "./routes/user.js";
 import sequelize from "./config/db.js";
+import promptGeneratorRoutes from "./routes/promptGenerator.js";
 
 const app = express();
 app.use(cors());
@@ -16,8 +16,9 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/ai/reply", aiReply);
-app.post("/ai/prompt", generatePrompt);
 app.use("/api/user", userRoutes);
+
+app.use("/api/prompt-generator", promptGeneratorRoutes);
 
 const PORT = process.env.PORT || 8787;
 

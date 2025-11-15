@@ -1,302 +1,345 @@
 // controllers/promptGenerator.js
 import axios from "axios";
 
-// Шаблоны для быстрого старта
-const BUSINESS_TEMPLATES = {
-  food_delivery: {
-    name: "Доставка еды",
-    icon: "🍕",
-    questions: [
-      {
-        id: "cuisine",
-        question: "Какая кухня?",
-        type: "text",
-        placeholder: "Например: Итальянская, Азиатская, Фастфуд",
-      },
-      {
-        id: "delivery_time",
-        question: "Среднее время доставки?",
-        type: "text",
-        placeholder: "Например: 30-45 минут",
-      },
-      {
-        id: "min_order",
-        question: "Минимальная сумма заказа?",
-        type: "text",
-        placeholder: "Например: 500 сом",
-      },
-    ],
-  },
-  taxi: {
-    name: "Такси/Трансфер",
-    icon: "🚗",
-    questions: [
-      {
-        id: "service_type",
-        question: "Какие услуги предоставляете?",
-        type: "multiselect",
-        options: [
-          "Городское такси",
-          "Межгород",
-          "Трансфер в аэропорт",
-          "Грузоперевозки",
-        ],
-      },
-      {
-        id: "coverage",
-        question: "Зона покрытия?",
-        type: "text",
-        placeholder: "Например: Бишкек и пригород",
-      },
-      {
-        id: "features",
-        question: "Особенности?",
-        type: "multiselect",
-        options: [
-          "Работаем 24/7",
-          "Безналичная оплата",
-          "Детские кресла",
-          "Комфортные авто",
-        ],
-      },
-    ],
-  },
-  cleaning: {
-    name: "Клининг",
-    icon: "🧹",
-    questions: [
-      {
-        id: "service_types",
-        question: "Какие виды уборки предлагаете?",
-        type: "multiselect",
-        options: [
-          "Квартиры",
-          "Офисы",
-          "После ремонта",
-          "Генеральная уборка",
-          "Поддерживающая уборка",
-        ],
-      },
-      {
-        id: "pricing",
-        question: "Как формируется цена?",
-        type: "text",
-        placeholder: "Например: От 1500 сом за 2-комнатную квартиру",
-      },
-      {
-        id: "features",
-        question: "Ваши преимущества?",
-        type: "multiselect",
-        options: [
-          "Профессиональное оборудование",
-          "Эко-средства",
-          "Быстрый выезд",
-          "Гарантия качества",
-        ],
-      },
-    ],
-  },
-  beauty: {
-    name: "Салон красоты",
-    icon: "💄",
-    questions: [
-      {
-        id: "services",
-        question: "Какие услуги предоставляете?",
-        type: "multiselect",
-        options: [
-          "Стрижка",
-          "Окрашивание",
-          "Маникюр/Педикюр",
-          "Макияж",
-          "Массаж",
-          "Косметология",
-        ],
-      },
-      {
-        id: "target",
-        question: "Для кого ваши услуги?",
-        type: "multiselect",
-        options: ["Женщины", "Мужчины", "Дети"],
-      },
-      {
-        id: "booking",
-        question: "Как записываться?",
-        type: "text",
-        placeholder: "Например: По телефону или онлайн",
-      },
-    ],
-  },
-  real_estate: {
-    name: "Недвижимость",
-    icon: "🏠",
-    questions: [
-      {
-        id: "service_type",
-        question: "Что предлагаете?",
-        type: "multiselect",
-        options: ["Продажа", "Аренда", "Посуточная аренда"],
-      },
-      {
-        id: "property_types",
-        question: "Тип недвижимости?",
-        type: "multiselect",
-        options: ["Квартиры", "Дома", "Коммерческая недвижимость", "Участки"],
-      },
-      {
-        id: "location",
-        question: "Где находится недвижимость?",
-        type: "text",
-        placeholder: "Например: Бишкек, разные районы",
-      },
-    ],
-  },
-  online_store: {
-    name: "Интернет-магазин",
-    icon: "📦",
-    questions: [
-      {
-        id: "products",
-        question: "Что продаете?",
-        type: "text",
-        placeholder: "Например: Одежда, электроника, косметика",
-      },
-      {
-        id: "delivery",
-        question: "Условия доставки?",
-        type: "text",
-        placeholder: "Например: Доставка по городу бесплатно от 2000 сом",
-      },
-      {
-        id: "payment",
-        question: "Способы оплаты?",
-        type: "multiselect",
-        options: ["Наличные", "Картой", "Онлайн-оплата", "Рассрочка"],
-      },
-    ],
-  },
-  custom: {
-    name: "Свой вариант",
-    icon: "✏️",
-    questions: [
-      {
-        id: "business_description",
-        question: "Опишите ваш бизнес",
-        type: "textarea",
-        placeholder: "Расскажите чем занимаетесь, что предлагаете...",
-      },
-      {
-        id: "target_audience",
-        question: "Ваша целевая аудитория?",
-        type: "text",
-        placeholder: "Например: Молодые семьи, предприниматели, студенты",
-      },
-      {
-        id: "key_features",
-        question: "Главные преимущества?",
-        type: "textarea",
-        placeholder: "Что отличает вас от конкурентов?",
-      },
-    ],
-  },
-};
+// Стартовое сообщение AI с расширенными инструкциями
+const AI_INTERVIEWER_SYSTEM_PROMPT = `Ты — эксперт по созданию промптов для WhatsApp AI-ассистентов. Твоя задача — провести короткое интервью (7-10 вопросов) с владельцем бизнеса, чтобы понять:
 
-// Общие вопросы для всех типов
-const COMMON_QUESTIONS = [
-  {
-    id: "language",
-    question: "На каком языке должен отвечать ассистент?",
-    type: "select",
-    options: [
-      { value: "auto", label: "Авто-определение (отвечать на языке клиента)" },
-      { value: "ru", label: "Только русский" },
-      { value: "ky", label: "Только кыргызский" },
-    ],
-    default: "auto",
-  },
-  {
-    id: "tone",
-    question: "Стиль общения?",
-    type: "select",
-    options: [
-      { value: "friendly", label: "Дружелюбный и неформальный" },
-      { value: "professional", label: "Профессиональный" },
-      { value: "warm_professional", label: "Профессиональный но тёплый" },
-      { value: "minimal", label: "Минималистичный (только факты)" },
-    ],
-    default: "friendly",
-  },
-  {
-    id: "additional_info",
-    question: "Дополнительные инструкции (опционально)",
-    type: "textarea",
-    placeholder: "Есть ли что-то ещё, что должен знать ассистент?",
-    optional: true,
-  },
-];
+ОСНОВНЫЕ ВОПРОСЫ:
+1. Чем занимается бизнес
+2. Что конкретно предлагают клиентам
+3. Ключевые особенности/преимущества
+4. Целевая аудитория
 
-// Генерация промпта через AI
-export async function generatePrompt(req, res) {
+КОНТАКТНАЯ ИНФОРМАЦИЯ (важно!):
+5. Физический адрес (если есть офис/магазин/точка)
+6. Способы оплаты (наличные, карты, электронные кошельки)
+7. Реквизиты для оплаты (номера кошельков, карт, банковские реквизиты)
+8. Время работы
+9. Контактные данные (телефон, email, соцсети)
+
+СТИЛЬ ОБЩЕНИЯ:
+10. Стиль общения (формальный/дружелюбный)
+11. Язык ответов (русский/кыргызский/авто)
+
+ПРАВИЛА ИНТЕРВЬЮ:
+- Задавай ОДИН конкретный вопрос за раз
+- Будь дружелюбным и кратким
+- Адаптируй вопросы под тип бизнеса (онлайн бизнесу не нужен физический адрес)
+- Если ответ неполный - уточни
+- Используй эмодзи
+- Спрашивай про способы оплаты ОБЯЗАТЕЛЬНО
+- Если есть способы оплаты - спроси конкретные реквизиты
+- После 7-10 вопросов скажи "INTERVIEW_COMPLETE"
+
+ПРИМЕРЫ ВОПРОСОВ:
+- "Какие способы оплаты вы принимаете? 💳"
+- "Есть ли у вас физический адрес, куда могут прийти клиенты? 📍"
+- "Какие реквизиты для оплаты я должен сообщать клиентам? (номер карты, кошелька)"
+- "В какое время вы работаете? 🕐"
+- "Какие контакты для связи я должен давать клиентам?"
+
+ФОРМАТ ОТВЕТА (JSON):
+{
+  "question": "Твой вопрос здесь",
+  "isComplete": false
+}
+
+Когда интервью закончено:
+{
+  "question": "Отлично! Сейчас создам промпт для вашего бизнеса ✨",
+  "isComplete": true
+}`;
+
+// Промпт для финальной генерации с контактами
+const PROMPT_GENERATOR_SYSTEM = `На основе интервью создай ИДЕАЛЬНЫЙ системный промпт для WhatsApp AI-ассистента.
+
+ТРЕБОВАНИЯ:
+1. 300-700 символов
+2. Язык промпта = язык который выбрал пользователь (или авто-определение)
+3. Конкретика о бизнесе, без общих фраз
+4. ОБЯЗАТЕЛЬНО включи контактную информацию
+5. Правильный тон общения
+6. Инструкции о языке ответов
+7. БЕЗ фраз "Ты AI-ассистент" - пиши от лица бизнеса
+
+СТРУКТУРА ПРОМПТА:
+1. Кто мы и что предлагаем (2-3 предложения)
+2. Ключевые преимущества (1 предложение)
+3. КОНТАКТНАЯ ИНФОРМАЦИЯ (очень важно!):
+   - Физический адрес (если есть)
+   - Время работы
+   - Способы оплаты
+   - Реквизиты для оплаты (номера карт, кошельков и т.д.)
+   - Контакты для связи
+4. Стиль общения и язык
+
+ПРИМЕРЫ ПРАВИЛЬНОГО ПРОМПТА:
+
+Пример 1 (с физическим адресом):
+"Мы — клининговая компания в Бишкеке. Убираем квартиры, офисы, после ремонта. Используем профессиональное оборудование и эко-средства.
+
+📍 Адрес: ул. Чуй 123, офис 45
+🕐 Работаем: 9:00-21:00 ежедневно
+💳 Оплата: наличные, Элсом, MBank, карты Visa/MasterCard
+📱 Реквизиты: 
+- Элсом: 0555 123 456
+- MBank: 0777 654 321
+- Карта: 1234 5678 9012 3456 (Айжан К.)
+
+Отвечай дружелюбно на языке клиента. Будь краток (2-3 предложения). При вопросах о цене/услугах предлагай конкретные варианты."
+
+Пример 2 (онлайн бизнес):
+"Мы — интернет-магазин косметики. Доставляем по Бишкеку и всему Кыргызстану.
+
+🚚 Доставка: Бишкек - бесплатно от 2000 сом, по КР - 200 сом
+💳 Оплата: наличными курьеру, MBank, Элсом, карты
+📱 Реквизиты:
+- MBank: 0555 777 888
+- Элсом: 0700 999 000
+- Карта: 4169 1234 5678 9012 (Нургуль Т.)
+☎️ Контакты: WhatsApp +996555777888, Instagram @kosmetika_kg
+
+Отвечай на русском или кыргызском - на языке клиента. Будь дружелюбной и профессиональной."
+
+ВАЖНО:
+- Все реквизиты пиши ТОЧНО как сказал пользователь
+- Форматируй красиво с эмодзи
+- Группируй информацию логически
+
+Верни ТОЛЬКО текст промпта, без пояснений.`;
+
+// Хранилище сессий интервью
+const interviewSessions = new Map();
+
+// Очистка старых сессий (старше 2 часов)
+setInterval(() => {
+  const now = Date.now();
+  for (const [sessionId, session] of interviewSessions.entries()) {
+    if (now - session.timestamp > 2 * 60 * 60 * 1000) {
+      interviewSessions.delete(sessionId);
+      console.log(`[INTERVIEW] Session ${sessionId} expired and removed`);
+    }
+  }
+}, 15 * 60 * 1000); // каждые 15 минут
+
+// Начать интервью
+export async function startInterview(req, res) {
   try {
-    const { businessType, answers } = req.body;
+    const { deviceId } = req.body;
 
-    if (!businessType || !answers) {
+    if (!deviceId) {
+      return res.status(400).json({ error: "deviceId is required" });
+    }
+
+    // Создать сессию
+    const sessionId = `${deviceId}_${Date.now()}`;
+
+    interviewSessions.set(sessionId, {
+      deviceId,
+      messages: [],
+      timestamp: Date.now(),
+    });
+
+    // Первый вопрос
+    const firstQuestion =
+      "Привет! 👋 Я помогу создать идеальный промпт для вашего AI-ассистента.\n\nДавайте начнём: чем занимается ваш бизнес? Что вы предлагаете клиентам?";
+
+    // Сохранить первый вопрос в сессию
+    const session = interviewSessions.get(sessionId);
+    session.messages.push({
+      role: "assistant",
+      content: firstQuestion,
+    });
+
+    console.log(`[INTERVIEW] Started session ${sessionId}`);
+
+    res.json({
+      success: true,
+      sessionId,
+      question: firstQuestion,
+      questionNumber: 1,
+      isComplete: false,
+    });
+  } catch (e) {
+    console.error("[INTERVIEW] Error starting:", e);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+// Ответить на вопрос и получить следующий
+export async function answerQuestion(req, res) {
+  try {
+    const { sessionId, answer } = req.body;
+
+    if (!sessionId || !answer) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Собираем контекст для AI
-    const template = BUSINESS_TEMPLATES[businessType];
-    const businessName = template?.name || "бизнес";
+    const session = interviewSessions.get(sessionId);
 
-    // Формируем промпт для GPT
-    const systemPrompt = `Ты — эксперт по созданию промптов для AI-ассистентов в WhatsApp. Твоя задача — создать ИДЕАЛЬНЫЙ системный промпт для бизнеса на основе данных пользователя.
-
-ВАЖНЫЕ ПРАВИЛА:
-1. Промпт должен быть на том языке, который выбрал пользователь
-2. Промпт должен быть кратким но содержательным (200-500 символов)
-3. Указывай конкретные детали о бизнесе
-4. Определи правильный стиль общения
-5. Упомяни ключевые особенности
-6. НЕ используй фразы типа "Вы AI-ассистент" - пиши от лица бизнеса
-7. Добавь инструкции о языке ответа
-
-СТРУКТУРА ПРОМПТА:
-- Кто мы (1 предложение)
-- Что предлагаем (2-3 предложения с конкретикой)
-- Как общаться (тон, стиль)
-- Важные детали (цены, время, условия)
-- Язык ответа
-
-Создай промпт БЕЗ вводных слов, сразу текст промпта.`;
-
-    const userMessage = `Тип бизнеса: ${businessName}
-
-Ответы пользователя:
-${Object.entries(answers)
-  .map(([key, value]) => {
-    if (Array.isArray(value)) {
-      return `${key}: ${value.join(", ")}`;
+    if (!session) {
+      return res.status(404).json({ error: "Session not found or expired" });
     }
-    return `${key}: ${value}`;
-  })
-  .join("\n")}
 
-Создай системный промпт для этого бизнеса.`;
+    // Добавить ответ пользователя в историю
+    session.messages.push({
+      role: "user",
+      content: answer,
+    });
 
-    // Вызываем OpenAI
+    // Обновить timestamp
+    session.timestamp = Date.now();
+
+    // Количество вопросов
+    const questionCount = session.messages.filter(
+      (m) => m.role === "user"
+    ).length;
+
+    console.log(
+      `[INTERVIEW] Session ${sessionId} - Question ${questionCount}/10`
+    );
+
+    // Если уже задали 10 вопросов - завершаем
+    if (questionCount >= 10) {
+      const completeMessage =
+        "Отлично! Собрал всю информацию. Сейчас создам идеальный промпт для вашего бизнеса ✨";
+
+      session.messages.push({
+        role: "assistant",
+        content: completeMessage,
+      });
+
+      console.log(
+        `[INTERVIEW] Session ${sessionId} completed with ${questionCount} questions`
+      );
+
+      return res.json({
+        success: true,
+        sessionId,
+        question: completeMessage,
+        questionNumber: questionCount + 1,
+        isComplete: true,
+      });
+    }
+
+    // Запрос к AI для следующего вопроса
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage },
+          { role: "system", content: AI_INTERVIEWER_SYSTEM_PROMPT },
+          ...session.messages,
         ],
         temperature: 0.7,
-        max_tokens: 500,
+        max_tokens: 250,
       },
       {
         timeout: 20000,
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const aiResponse =
+      response?.data?.choices?.[0]?.message?.content?.trim() || "";
+
+    if (!aiResponse) {
+      throw new Error("No response from AI");
+    }
+
+    // Попытка распарсить JSON
+    let nextQuestion = aiResponse;
+    let isComplete = false;
+
+    try {
+      const parsed = JSON.parse(aiResponse);
+      nextQuestion = parsed.question || aiResponse;
+      isComplete = parsed.isComplete || false;
+    } catch {
+      // Проверяем на ключевое слово завершения
+      isComplete =
+        aiResponse.includes("INTERVIEW_COMPLETE") ||
+        questionCount >= 9 ||
+        aiResponse.toLowerCase().includes("создам промпт");
+
+      if (isComplete) {
+        nextQuestion =
+          "Отлично! Собрал всю информацию. Сейчас создам идеальный промпт для вашего бизнеса ✨";
+      }
+    }
+
+    // Сохранить следующий вопрос
+    session.messages.push({
+      role: "assistant",
+      content: nextQuestion,
+    });
+
+    res.json({
+      success: true,
+      sessionId,
+      question: nextQuestion,
+      questionNumber: questionCount + 1,
+      isComplete,
+    });
+  } catch (e) {
+    console.error("[INTERVIEW] Error answering:", e);
+    const status = e?.response?.status || 500;
+    res.status(status).json({ error: "Failed to get next question" });
+  }
+}
+
+// Сгенерировать финальный промпт
+export async function generatePromptFromInterview(req, res) {
+  try {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "sessionId is required" });
+    }
+
+    const session = interviewSessions.get(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found or expired" });
+    }
+
+    console.log(`[PROMPT_GEN] Generating prompt for session ${sessionId}`);
+    console.log(`[PROMPT_GEN] Interview messages: ${session.messages.length}`);
+
+    // Собрать всю историю интервью
+    const interviewTranscript = session.messages
+      .map(
+        (m) =>
+          `${m.role === "user" ? "Владелец бизнеса" : "Интервьюер"}: ${
+            m.content
+          }`
+      )
+      .join("\n\n");
+
+    console.log(
+      `[PROMPT_GEN] Transcript length: ${interviewTranscript.length} chars`
+    );
+
+    // Запрос к AI для генерации промпта
+    const response = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: PROMPT_GENERATOR_SYSTEM },
+          {
+            role: "user",
+            content: `На основе этого интервью создай системный промпт с ОБЯЗАТЕЛЬНЫМ включением всех контактных данных:\n\n${interviewTranscript}`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 800,
+      },
+      {
+        timeout: 30000,
         headers: {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           "Content-Type": "application/json",
@@ -311,59 +354,125 @@ ${Object.entries(answers)
       throw new Error("Failed to generate prompt");
     }
 
+    console.log(
+      `[PROMPT_GEN] Generated prompt length: ${generatedPrompt.length} chars`
+    );
+
+    // НЕ удаляем сессию сразу - пользователь может захотеть регенерировать
+    // Сессия удалится через 2 часа автоматически
+
     res.json({
       success: true,
       prompt: generatedPrompt,
+      sessionId, // Возвращаем для возможной регенерации
     });
   } catch (e) {
-    console.error("Error generating prompt:", e);
+    console.error("[PROMPT_GEN] Error generating:", e);
     const status = e?.response?.status || 500;
-    const msg = e?.response?.data || { error: String(e?.message || e) };
-    res.status(status).json({ error: msg });
+    res.status(status).json({ error: "Failed to generate prompt" });
   }
 }
 
-// Получить список шаблонов
-export async function getTemplates(req, res) {
+// Регенерировать промпт (с теми же данными)
+export async function regeneratePrompt(req, res) {
   try {
-    const templates = Object.entries(BUSINESS_TEMPLATES).map(
-      ([key, value]) => ({
-        id: key,
-        name: value.name,
-        icon: value.icon,
-      })
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "sessionId is required" });
+    }
+
+    const session = interviewSessions.get(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found or expired" });
+    }
+
+    console.log(`[PROMPT_GEN] Regenerating prompt for session ${sessionId}`);
+
+    // Используем ту же логику что и в generatePromptFromInterview
+    const interviewTranscript = session.messages
+      .map(
+        (m) =>
+          `${m.role === "user" ? "Владелец бизнеса" : "Интервьюер"}: ${
+            m.content
+          }`
+      )
+      .join("\n\n");
+
+    // Добавляем инструкцию для разнообразия
+    const response = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              PROMPT_GENERATOR_SYSTEM +
+              "\n\nСоздай ДРУГОЙ вариант промпта (измени формулировки, но сохрани всю информацию).",
+          },
+          {
+            role: "user",
+            content: `На основе этого интервью создай АЛЬТЕРНАТИВНЫЙ системный промпт:\n\n${interviewTranscript}`,
+          },
+        ],
+        temperature: 0.9, // Больше креативности
+        max_tokens: 800,
+      },
+      {
+        timeout: 30000,
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const generatedPrompt =
+      response?.data?.choices?.[0]?.message?.content?.trim() || "";
+
+    if (!generatedPrompt) {
+      throw new Error("Failed to regenerate prompt");
+    }
+
+    console.log(
+      `[PROMPT_GEN] Regenerated prompt length: ${generatedPrompt.length} chars`
     );
 
     res.json({
       success: true,
-      templates,
+      prompt: generatedPrompt,
+      sessionId,
     });
   } catch (e) {
-    console.error("Error getting templates:", e);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("[PROMPT_GEN] Error regenerating:", e);
+    const status = e?.response?.status || 500;
+    res.status(status).json({ error: "Failed to regenerate prompt" });
   }
 }
 
-// Получить вопросы для конкретного типа бизнеса
-export async function getQuestions(req, res) {
+// Отменить интервью
+export async function cancelInterview(req, res) {
   try {
-    const { businessType } = req.params;
+    const { sessionId } = req.body;
 
-    if (!businessType || !BUSINESS_TEMPLATES[businessType]) {
-      return res.status(400).json({ error: "Invalid business type" });
+    if (!sessionId) {
+      return res.status(400).json({ error: "sessionId is required" });
     }
 
-    const template = BUSINESS_TEMPLATES[businessType];
+    const deleted = interviewSessions.delete(sessionId);
+
+    console.log(
+      `[INTERVIEW] Session ${sessionId} ${deleted ? "cancelled" : "not found"}`
+    );
 
     res.json({
       success: true,
-      businessName: template.name,
-      icon: template.icon,
-      specificQuestions: template.questions,
-      commonQuestions: COMMON_QUESTIONS,
+      message: deleted ? "Interview cancelled" : "Session not found",
     });
   } catch (e) {
-    console.error("Error getting questions:", e);
+    console.error("[INTERVIEW] Error cancelling:", e);
     res.status(500).json({ error: "Internal server error" });
   }
 }
