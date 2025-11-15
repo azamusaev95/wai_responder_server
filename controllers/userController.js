@@ -10,15 +10,6 @@ const isSubscriptionActive = (user) => {
   return new Date() < new Date(user.subscriptionExpires);
 };
 
-// Обновить статус (проверить не истекла ли подписка)
-const updateUserStatus = async (user) => {
-  if (!isSubscriptionActive(user) && user.isPro) {
-    user.isPro = false;
-    await user.save();
-  }
-  return user;
-};
-
 // POST /api/user/init - Инициализация пользователя
 const initUser = async (req, res) => {
   try {
@@ -28,21 +19,49 @@ const initUser = async (req, res) => {
       return res.status(400).json({ error: "deviceId is required" });
     }
 
+    const now = new Date();
+
     const [user, created] = await User.findOrCreate({
       where: { deviceId },
       defaults: {
         deviceId,
         isPro: false,
+        messagesThisMonth: 0,
+        messagesResetDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000), // +30 дней от создания
+        createdAt: now,
       },
     });
 
     const updatedUser = await updateUserStatus(user);
+
+    // Проверить, нужно ли сбросить счетчик сообщений (только для FREE)
+    if (!updatedUser.isPro) {
+      if (
+        updatedUser.messagesResetDate &&
+        now >= new Date(updatedUser.messagesResetDate)
+      ) {
+        // Прошло 30 дней - сбросить счетчик и установить новую дату
+        updatedUser.messagesThisMonth = 0;
+        updatedUser.messagesResetDate = new Date(
+          now.getTime() + 30 * 24 * 60 * 60 * 1000
+        );
+        await updatedUser.save();
+      }
+    }
+
+    // Вычислить оставшиеся сообщения для FREE
+    const messagesRemaining = updatedUser.isPro
+      ? null // для PRO - безлимит
+      : Math.max(0, 50 - (updatedUser.messagesThisMonth || 0));
 
     res.json({
       success: true,
       isNew: created,
       isPro: updatedUser.isPro,
       subscriptionExpiresAt: updatedUser.subscriptionExpires,
+      messagesThisMonth: updatedUser.messagesThisMonth || 0,
+      messagesResetDate: updatedUser.messagesResetDate,
+      messagesRemaining: messagesRemaining,
     });
   } catch (error) {
     console.error("Error in initUser:", error);
@@ -84,9 +103,7 @@ const verifyPurchase = async (req, res) => {
     const { deviceId, purchaseToken } = req.body;
 
     if (!deviceId || !purchaseToken) {
-      return res.status(400).json({
-        error: "deviceId and purchaseToken are required",
-      });
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
     const user = await User.findOne({ where: { deviceId } });
@@ -95,48 +112,53 @@ const verifyPurchase = async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    let isValid = false;
+    const now = new Date();
 
-    if (USE_FAKE_GOOGLE_PLAY) {
-      console.log("🧪 Fake Google Play verification");
-      isValid = purchaseToken.startsWith("fake_token_");
-      if (isValid) {
-        console.log("✅ Fake token accepted:", purchaseToken);
-      }
-    } else {
-      console.log("🔐 Real Google Play verification");
-      // TODO: Реализовать проверку через Google Play API
-      // isValid = await verifyWithGooglePlayAPI(purchaseToken);
-      isValid = false;
-    }
-
-    if (!isValid) {
-      return res.status(400).json({
-        error: "Invalid purchase token",
-      });
-    }
-
-    // Активировать PRO
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30); // +30 дней
-
+    // Активировать PRO на 30 дней от момента покупки
     user.isPro = true;
-    user.subscriptionExpires = expiresAt;
+    user.subscriptionExpires = new Date(
+      now.getTime() + 30 * 24 * 60 * 60 * 1000
+    ); // +30 дней
     user.purchaseToken = purchaseToken;
-    await user.save();
 
-    console.log(`✅ PRO activated for device: ${deviceId}`);
+    // Сбросить счетчик сообщений при активации PRO
+    user.messagesThisMonth = 0;
+    user.messagesResetDate = null; // для PRO не нужна дата сброса
+
+    await user.save();
 
     res.json({
       success: true,
       isPro: true,
-      subscriptionExpiresAt: expiresAt,
-      message: "PRO subscription activated!",
+      subscriptionExpiresAt: user.subscriptionExpires,
+      messagesRemaining: null, // безлимит
     });
   } catch (error) {
     console.error("Error in verifyPurchase:", error);
     res.status(500).json({ error: "Internal server error" });
   }
+};
+
+const updateUserStatus = async (user) => {
+  const now = new Date();
+
+  // Проверить, не истекла ли PRO подписка
+  if (
+    user.isPro &&
+    user.subscriptionExpires &&
+    now >= new Date(user.subscriptionExpires)
+  ) {
+    user.isPro = false;
+    user.subscriptionExpires = null;
+
+    // Восстановить FREE лимиты
+    user.messagesThisMonth = 0;
+    user.messagesResetDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    await user.save();
+  }
+
+  return user;
 };
 
 export { initUser, getStatus, verifyPurchase };
