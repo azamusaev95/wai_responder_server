@@ -12,6 +12,7 @@ function formatCatalog(items = []) {
       name: String(x.name ?? "").slice(0, 64),
       description: String(x.description ?? "").slice(0, 240),
       price: Number.isFinite(+x.price) ? +x.price : undefined,
+      isNegotiable: x.isNegotiable === true,
     }));
     return JSON.stringify(arr);
   } catch {
@@ -37,24 +38,22 @@ const updateUserStatus = async (user) => {
 
 // Проверить нужно ли сбросить счётчик
 const shouldResetMessages = (user) => {
+  if (!user.messagesResetDate) return false;
   const now = new Date();
-  const resetDate = new Date(user.messagesResetDate);
-  const daysDiff = (now - resetDate) / (1000 * 60 * 60 * 24);
-  return daysDiff >= 30;
+  return now >= new Date(user.messagesResetDate);
 };
 
 export async function aiReply(req, res) {
   try {
     const {
       model = "gpt-4o-mini",
-      systemPrompt = "Отвечай кратко и по делу.",
+      systemPrompt = "You are a helpful assistant.", // ← Fallback на английском
       message = "",
-      lang = "ru",
-      contact = { name: "Клиент", isGroup: false },
+      contact = { name: "Client", isGroup: false },
       catalog = [],
       temperature = 0.3,
       maxTokens = 256,
-      deviceId, // ← ДОБАВИЛИ deviceId
+      deviceId,
     } = req.body || {};
 
     // ========== ПРОВЕРКА ЛИМИТА ==========
@@ -62,17 +61,18 @@ export async function aiReply(req, res) {
       const user = await User.findOne({ where: { deviceId } });
 
       if (user) {
-        // Обновить статус подписки
         const updatedUser = await updateUserStatus(user);
 
-        // Проверить нужно ли сбросить счётчик
         if (shouldResetMessages(updatedUser)) {
+          const now = new Date();
           updatedUser.messagesThisMonth = 0;
-          updatedUser.messagesResetDate = new Date();
+          updatedUser.messagesResetDate = new Date(
+            now.getTime() + 30 * 24 * 60 * 60 * 1000
+          );
           await updatedUser.save();
+          console.log(`🔄 Message counter reset for device: ${deviceId}`);
         }
 
-        // Проверить лимит для FREE пользователей
         if (!updatedUser.isPro) {
           const FREE_LIMIT = 50;
 
@@ -83,7 +83,7 @@ export async function aiReply(req, res) {
             return res.status(403).json({
               error: "Message limit reached",
               reply:
-                "⚠️ Лимит FREE версии исчерпан (50 сообщений/месяц). Перейдите на PRO для безлимитных ответов! 🚀",
+                "⚠️ FREE версиясынын лимити бүттү (50 билдирүү/айына). PRO версиясына өтүңүз! 🚀",
               limit: {
                 used: updatedUser.messagesThisMonth,
                 total: FREE_LIMIT,
@@ -104,29 +104,26 @@ export async function aiReply(req, res) {
     }
 
     // ========== OPENAI REQUEST ==========
-    const sys = [
-      systemPrompt,
-      "Правила: 1) 1–3 предложения, 2) без Markdown, 3) язык ответа = язык сообщения, 4) не выдумывай факты.",
-      "Если уместно, ссылайся на товары/услуги из каталога.",
-    ].join("\n");
-
-    const user = [
-      `Язык: ${lang}`,
-      `Контакт: ${contact?.name ?? "Клиент"} (${
-        contact?.isGroup ? "группа" : "личка"
+    // ИСПОЛЬЗУЕМ ТОЛЬКО systemPrompt БЕЗ ДОПОЛНЕНИЙ!
+    const userMessage = [
+      `Contact: ${contact?.name ?? "Client"} (${
+        contact?.isGroup ? "group" : "private"
       })`,
-      `Сообщение: "${String(message ?? "").slice(0, 2000)}"`,
-      `Каталог JSON: ${formatCatalog(catalog)}`,
-      "Дай короткий, вежливый и полезный ответ.",
-    ].join("\n");
+      `Message: "${String(message ?? "").slice(0, 2000)}"`,
+    ];
+
+    // Добавляем каталог только если он передан
+    if (Array.isArray(catalog) && catalog.length > 0) {
+      userMessage.push(`Catalog (JSON): ${formatCatalog(catalog)}`);
+    }
 
     const resp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
         model,
         messages: [
-          { role: "system", content: sys },
-          { role: "user", content: user },
+          { role: "system", content: systemPrompt }, // ← Используем КАК ЕСТЬ, без добавлений!
+          { role: "user", content: userMessage.join("\n") },
         ],
         temperature: clamp(+temperature, 0, 1),
         max_tokens: clamp(+maxTokens, 16, 1024),
