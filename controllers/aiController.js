@@ -46,7 +46,7 @@ const shouldResetMessages = (user) => {
 export async function aiReply(req, res) {
   try {
     const {
-      model = "gpt-4o-mini",
+      model = "gpt-4o",
       systemPrompt = "You are a helpful assistant.", // ← Fallback на английском
       message = "",
       contact = { name: "Client", isGroup: false },
