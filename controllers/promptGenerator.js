@@ -1,5 +1,6 @@
 // controllers/promptGenerator.js
 import axios from "axios";
+import User from "../models/User.js";
 
 // Стартовое сообщение AI с расширенными инструкциями
 const AI_INTERVIEWER_SYSTEM_PROMPT = `Ты — эксперт по созданию промптов для WhatsApp AI-ассистентов. Твоя задача — провести короткое интервью (8-12 вопросов) с владельцем бизнеса, чтобы понять:
@@ -344,7 +345,6 @@ export async function answerQuestion(req, res) {
   }
 }
 
-// Сгенерировать финальный промпт
 export async function generatePromptFromInterview(req, res) {
   try {
     const { sessionId } = req.body;
@@ -359,10 +359,28 @@ export async function generatePromptFromInterview(req, res) {
       return res.status(404).json({ error: "Session not found or expired" });
     }
 
-    console.log(`[PROMPT_GEN] Generating prompt for session ${sessionId}`);
-    console.log(`[PROMPT_GEN] Interview messages: ${session.messages.length}`);
+    // 1. Проверка статуса пользователя
+    let isPro = false;
+    try {
+      const user = await User.findOne({
+        where: { deviceId: session.deviceId },
+      });
+      if (user && user.isPro) {
+        isPro = true;
+      }
+    } catch (err) {
+      console.error("[PROMPT_GEN] Error checking user status:", err);
+    }
 
-    // Собрать всю историю интервью
+    // 2. Формируем инструкцию по длине (только текст, без max_tokens)
+    const lengthInstruction = isPro
+      ? "Длина промпта: от 500 до 1500 символов. Сделай его максимально подробным, красивым и продающим."
+      : "СТРОГОЕ ОГРАНИЧЕНИЕ: Длина промпта НЕ БОЛЕЕ 600 символов. Пиши максимально кратко, убери лишние слова, оставь только самую важную суть и контакты.";
+
+    console.log(
+      `[PROMPT_GEN] Generating prompt for session ${sessionId}. User is PRO: ${isPro}`
+    );
+
     const interviewTranscript = session.messages
       .map(
         (m) =>
@@ -372,24 +390,22 @@ export async function generatePromptFromInterview(req, res) {
       )
       .join("\n\n");
 
-    console.log(
-      `[PROMPT_GEN] Transcript length: ${interviewTranscript.length} chars`
-    );
-
-    // Запрос к AI для генерации промпта
+    // Запрос к AI
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-4o-mini",
+        model: "gpt-4o-mini", // gpt-4o-mini отлично следует инструкциям по длине
         messages: [
           { role: "system", content: PROMPT_GENERATOR_SYSTEM },
+          // Инструкция по длине
+          { role: "system", content: lengthInstruction },
           {
             role: "user",
-            content: `На основе этого интервью создай системный промпт с ОБЯЗАТЕЛЬНЫМ включением всех важных данных (включая доставку, если она есть):\n\n${interviewTranscript}`,
+            content: `На основе этого интервью создай системный промпт:\n\n${interviewTranscript}`,
           },
         ],
         temperature: 0.7,
-        max_tokens: 800,
+        // max_tokens УБРАН, чтобы не обрывать текст
       },
       {
         timeout: 30000,
@@ -407,17 +423,11 @@ export async function generatePromptFromInterview(req, res) {
       throw new Error("Failed to generate prompt");
     }
 
-    console.log(
-      `[PROMPT_GEN] Generated prompt length: ${generatedPrompt.length} chars`
-    );
-
-    // НЕ удаляем сессию сразу - пользователь может захотеть регенерировать
-    // Сессия удалится через 2 часа автоматически
-
     res.json({
       success: true,
       prompt: generatedPrompt,
-      sessionId, // Возвращаем для возможной регенерации
+      sessionId,
+      isPro,
     });
   } catch (e) {
     console.error("[PROMPT_GEN] Error generating:", e);
@@ -441,9 +451,23 @@ export async function regeneratePrompt(req, res) {
       return res.status(404).json({ error: "Session not found or expired" });
     }
 
+    // Проверка статуса
+    let isPro = false;
+    try {
+      const user = await User.findOne({
+        where: { deviceId: session.deviceId },
+      });
+      if (user && user.isPro) isPro = true;
+    } catch (err) {
+      console.error("[PROMPT_GEN] Error checking user status:", err);
+    }
+
+    const lengthInstruction = isPro
+      ? "Длина промпта: от 500 до 1500 символов. Распиши подробно."
+      : "СТРОГОЕ ОГРАНИЧЕНИЕ: Длина промпта НЕ БОЛЕЕ 600 символов. Будь краток.";
+
     console.log(`[PROMPT_GEN] Regenerating prompt for session ${sessionId}`);
 
-    // Используем ту же логику что и в generatePromptFromInterview
     const interviewTranscript = session.messages
       .map(
         (m) =>
@@ -453,7 +477,6 @@ export async function regeneratePrompt(req, res) {
       )
       .join("\n\n");
 
-    // Добавляем инструкцию для разнообразия
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -463,15 +486,16 @@ export async function regeneratePrompt(req, res) {
             role: "system",
             content:
               PROMPT_GENERATOR_SYSTEM +
-              "\n\nСоздай ДРУГОЙ вариант промпта (измени формулировки, но сохрани всю информацию).",
+              "\n\nСоздай ДРУГОЙ вариант промпта (измени формулировки).",
           },
+          { role: "system", content: lengthInstruction },
           {
             role: "user",
             content: `На основе этого интервью создай АЛЬТЕРНАТИВНЫЙ системный промпт:\n\n${interviewTranscript}`,
           },
         ],
-        temperature: 0.9, // Больше креативности
-        max_tokens: 800,
+        temperature: 0.9,
+        // max_tokens УБРАН
       },
       {
         timeout: 30000,
@@ -488,10 +512,6 @@ export async function regeneratePrompt(req, res) {
     if (!generatedPrompt) {
       throw new Error("Failed to regenerate prompt");
     }
-
-    console.log(
-      `[PROMPT_GEN] Regenerated prompt length: ${generatedPrompt.length} chars`
-    );
 
     res.json({
       success: true,
