@@ -156,7 +156,7 @@ export async function answerQuestion(req, res) {
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-4o",
+        model: "gpt-5.1",
         messages: [
           {
             role: "system",
