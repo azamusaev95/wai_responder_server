@@ -3,7 +3,7 @@ import User from "../models/User.js";
 // Убедись, что путь к файлу констант правильный
 import { FIRST_QUESTIONS } from "../constants/firstQuestions.js";
 
-// --- 1. Промпт для AI-Интервьюера (тот, кто задает вопросы) ---
+// --- 1. Промпт для AI-Интервьюера (сбор данных) ---
 const GET_AI_INTERVIEWER_PROMPT = (lang) => `
 You are an expert business analyst and AI prompt specialist.
 Your task is to conduct a structured interview with a business owner to gather information for building their AI WhatsApp chatbot.
@@ -36,6 +36,7 @@ Always reply with a JSON object:
 `;
 
 // --- 2. Промпт для Генератора (создает финальную инструкцию) ---
+// 🔥 ИЗМЕНЕНО: Добавлено правило про [SILENCE] вместо менеджера
 const GET_PROMPT_GENERATOR_SYSTEM = (lang) => `
 You are an expert AI Prompt Engineer.
 Your goal is to write a highly effective **SYSTEM PROMPT** for a WhatsApp AI Assistant, based on the interview transcript provided.
@@ -46,13 +47,13 @@ TARGET LANGUAGE: ${lang} (The generated prompt must be in this language!)
 - You are writing **INSTRUCTIONS FOR THE AI**, not a biography.
 - **DO NOT** write: "I am a flower shop..."
 - **MUST WRITE**: "You are a helpful AI assistant for [Business Name]..." or "Your role is to help customers..."
-- Use imperative commands: "Answer politely", "Reject irrelevant questions", "If asked about delivery, say...".
+- Use imperative commands: "Answer politely", "If asked about delivery, say...".
 
 **STRUCTURE OF THE GENERATED PROMPT:**
 
 1. **Role & Identity**:
-   - Define who the AI is (e.g., "You are the virtual manager of 'PizzaFast'...").
-   - Define the personality (e.g., "Be polite, use emojis, keep answers short").
+   - Define who the AI is (e.g., "You are the virtual manager...").
+   - Define the personality.
 
 2. **Business Context**:
    - Briefly summarize what the business sells or offers.
@@ -61,21 +62,22 @@ TARGET LANGUAGE: ${lang} (The generated prompt must be in this language!)
    - **Delivery**: Zones, prices, free delivery thresholds, timings.
    - **Address & Hours**: Exact location and working hours.
    - **Contacts**: Phone numbers, links.
-   - **Payment Details**: List accepted methods AND specific requisites (card numbers, etc.) provided in the interview. This is crucial for sales.
+   - **Payment Details**: List accepted methods AND specific requisites (card numbers, etc.).
 
-4. **Behavioral Guidelines**:
-   - "If you don't know the answer, ask the user to contact the manager."
+4. **Behavioral Guidelines (CRITICAL)**:
+   - "If the user asks something UNRELATED to this business, or if you strictly DON'T know the answer based on these instructions, output EXACTLY this word: [SILENCE]"
+   - "Do NOT say 'I don't know'. Do NOT say 'Contact manager'. Just output [SILENCE]."
    - "Respond in the same language as the user."
    - "Keep responses concise and mobile-friendly."
 
 **OUTPUT**:
-Return **ONLY** the text of the system prompt. Do not add markdown code blocks, do not add "Here is your prompt". Just the raw text.
+Return **ONLY** the text of the system prompt. No markdown, no intros.
 `;
 
-// --- Хранилище сессий (в памяти) ---
+// --- Хранилище сессий ---
 const interviewSessions = new Map();
 
-// Очистка старых сессий (раз в 15 минут удаляем сессии старше 2 часов)
+// Очистка старых сессий
 setInterval(() => {
   const now = Date.now();
   for (const [sessionId, session] of interviewSessions.entries()) {
@@ -100,8 +102,7 @@ export async function startInterview(req, res) {
 
     const sessionId = `${deviceId}_${Date.now()}`;
 
-    // ⚡ БЕРЕМ ГОТОВЫЙ ВОПРОС ИЗ ФАЙЛА КОНСТАНТ (Мгновенно)
-    // Если языка нет в списке, берем английский ('en')
+    // Берем готовый вопрос из файла констант
     const firstQuestion = FIRST_QUESTIONS[language] || FIRST_QUESTIONS["en"];
 
     interviewSessions.set(sessionId, {
@@ -151,7 +152,7 @@ export async function answerQuestion(req, res) {
       (m) => m.role === "user"
     ).length;
 
-    // Жесткий лимит вопросов (на всякий случай)
+    // Лимит вопросов
     if (questionCount >= 15) {
       return finishInterview(res, session, sessionId, questionCount);
     }
@@ -160,7 +161,7 @@ export async function answerQuestion(req, res) {
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-4o", // Используем умную модель для ведения диалога
+        model: "gpt-4o",
         messages: [
           {
             role: "system",
@@ -169,7 +170,7 @@ export async function answerQuestion(req, res) {
           ...session.messages,
         ],
         temperature: 0.7,
-        response_format: { type: "json_object" }, // Обязательно требуем JSON
+        response_format: { type: "json_object" },
       },
       {
         headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
@@ -182,7 +183,6 @@ export async function answerQuestion(req, res) {
     try {
       aiResponse = JSON.parse(content);
     } catch (e) {
-      // Fallback если AI вернул не JSON (редко, но бывает)
       aiResponse = { question: content, isComplete: false };
     }
 
@@ -210,13 +210,16 @@ export async function answerQuestion(req, res) {
   }
 }
 
-// Вспомогательная функция завершения (генерирует финальную фразу)
+// Вспомогательная функция завершения
 function finishInterview(res, session, sessionId, count) {
-  // Простая локализация финальной фразы
+  // Локализация финальной фразы
   const finalPhrases = {
     ru: "Отлично! Я собрал всю информацию. Генерирую идеальный промпт... ✨",
     en: "Great! I've gathered all the info. Generating your perfect prompt... ✨",
-    // Можно добавить другие языки или использовать английский как дефолт
+    tr: "Harika! Tüm bilgileri topladım. Mükemmel istemi oluşturuyorum... ✨",
+    ky: "Азаматсыз! Бардык маалыматты чогулттум. Идеалдуу промпт түзүп жатам... ✨",
+    uz: "Ajoyib! Barcha ma'lumotlarni to'pladim. Ideal prompt yaratyapman... ✨",
+    // Добавь другие языки при необходимости, иначе будет EN
   };
 
   const finalMsg = finalPhrases[session.language] || finalPhrases["en"];
@@ -242,7 +245,6 @@ export async function generatePromptFromInterview(req, res) {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    // Проверка PRO статуса (влияет на длину промпта)
     let isPro = false;
     try {
       const user = await User.findOne({
@@ -253,25 +255,19 @@ export async function generatePromptFromInterview(req, res) {
       console.error("User check error", e);
     }
 
-    // Инструкция по длине
+    // Инструкция по длине + напоминание про тишину
     const lengthInstruction = isPro
-      ? "Make the prompt detailed, comprehensive, and logically structured (up to 1500 chars). Use formatting."
-      : "STRICT LIMIT: Keep the prompt under 600 characters. Remove filler words. Keep only essential facts.";
+      ? "Make the prompt detailed, comprehensive (up to 1500 chars). Ensure the [SILENCE] rule is clearly stated."
+      : "STRICT LIMIT: Keep under 600 chars. Ensure the [SILENCE] rule is included.";
 
-    // Собираем историю диалога
     const transcript = session.messages
-      .map(
-        (m) =>
-          `${m.role === "user" ? "Business Owner" : "Interviewer"}: ${
-            m.content
-          }`
-      )
+      .map((m) => `${m.role === "user" ? "Owner" : "AI"}: ${m.content}`)
       .join("\n\n");
 
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-4o-mini", // Mini отлично справляется с суммаризацией
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
@@ -280,7 +276,7 @@ export async function generatePromptFromInterview(req, res) {
           { role: "system", content: lengthInstruction },
           {
             role: "user",
-            content: `Here is the interview transcript:\n\n${transcript}`,
+            content: `Interview Transcript:\n${transcript}`,
           },
         ],
         temperature: 0.7,
@@ -304,7 +300,7 @@ export async function generatePromptFromInterview(req, res) {
   }
 }
 
-// 4. REGENERATE PROMPT (Альтернативная версия)
+// 4. REGENERATE PROMPT
 export async function regeneratePrompt(req, res) {
   try {
     const { sessionId } = req.body;
@@ -320,7 +316,7 @@ export async function regeneratePrompt(req, res) {
             role: "system",
             content:
               GET_PROMPT_GENERATOR_SYSTEM(session.language) +
-              "\n\nIMPORTANT: Create a DIFFERENT version. Change the structure or tone slightly.",
+              "\n\nIMPORTANT: Create a DIFFERENT version. Don't forget the [SILENCE] rule.",
           },
           {
             role: "user",
