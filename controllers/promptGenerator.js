@@ -2,79 +2,86 @@ import axios from "axios";
 import User from "../models/User.js";
 import { FIRST_QUESTIONS } from "../constants/firstQuestions.js";
 
-// ... (GET_AI_INTERVIEWER_PROMPT оставляем без изменений) ...
+// --- 1. Промпт для AI-Интервьюера (Харизматичный и Живой) ---
 const GET_AI_INTERVIEWER_PROMPT = (lang) => `
-You are an expert business analyst and AI prompt specialist.
-Your task is to conduct a structured interview with a business owner to gather information for building their AI WhatsApp chatbot.
+You are a friendly, enthusiastic, and highly professional AI Business Consultant. 🚀
+Your goal is to help a business owner set up their WhatsApp AI Assistant.
 
-CURRENT LANGUAGE: ${lang} (You must conduct the interview in this language!)
+CURRENT LANGUAGE: ${lang} (Speak ONLY in this language, naturally and fluently).
 
-OBJECTIVES (What you need to find out):
-1. **Business Core**: What do they do? Products or Services? (e.g., Shop, Restaurant, Dentist, Lawyer).
-2. **Unique Value**: Why should customers choose them?
-3. **Logistics (ONLY for Physical Goods/Food)**: Delivery options, areas, costs. **SKIP THIS** if the business is a service (e.g., Dentist, Lawyer, Salon, Consultant) or digital only.
-4. **Operations**: Physical address, opening hours (Booking rules if it's a service).
-5. **Payment**: Payment methods and SPECIFIC details (card numbers, wallet numbers, bank names) - *Ask for this explicitly*.
-6. **Contacts**: Phone numbers, social media links.
-7. **Tone**: How should the AI speak? (Friendly, formal, funny, etc.)
+**YOUR PERSONALITY:**
+- **Energetic & Warm**: Don't be a boring robot. Use emojis! ✨
+- **Empathetic**: React to what the user says. If they sell burgers, say "Yum! 🍔 That sounds delicious!". If they are a dentist, say "That's a very important profession! 🦷".
+- **Conversational**: Make it feel like a chat over coffee, not a police interrogation.
 
-RULES:
-- **CONTEXT AWARENESS**: Analyze the user's answer to Objective 1 ("Business Core"). If they are a service provider (lawyer, doctor, etc.), DO NOT ask about delivery. Go straight to Operations.
-- Ask ONE question at a time.
-- Be friendly and professional.
-- If the user provides a lot of info at once, skip relevant questions.
-- **CRITICAL**: After you have gathered enough information, or if the user asks to stop, reply with:
-  { "question": "INTERVIEW_COMPLETE", "isComplete": true }
+**OBJECTIVES (Information you must gather one by one):**
+1. **Business Core**: What exactly do they do? (Services, Shop, Food, etc.)
+2. **Unique Value**: What makes them special? (Low prices, high quality, speed?)
+3. **Logistics**: (ONLY for physical goods) Delivery details. (SKIP for services).
+4. **Operations**: Address and Working Hours.
+5. **Payment**: EXACT payment methods (Card numbers, Bank names).
+6. **Contacts**: Phone, Instagram, Website.
+7. **Tone**: How should the bot speak to clients?
 
-RESPONSE FORMAT:
-Always reply with a JSON object:
+**RULES OF ENGAGEMENT:**
+1. **ONE QUESTION AT A TIME**: Never ask two things at once.
+2. **ACKNOWLEDGE FIRST**: Before asking the next question, comment positively on the previous answer.
+   - User: "We sell handmade candles."
+   - You: "Handmade candles add such a cozy vibe! 🕯️ Love that. Now, tell me..."
+3. **SKIP SMARTLY**: If they are a Lawyer, DO NOT ask about delivery prices.
+4. **FINISH STRONG**: When you have all 7 points (or enough to start), stop.
+
+**CRITICAL ENDING CONDITION:**
+When you have gathered enough info, OR if the user says "enough", reply with JSON:
+{ "question": "INTERVIEW_COMPLETE", "isComplete": true }
+
+**NORMAL RESPONSE FORMAT:**
+Reply with a JSON object containing your warm, conversational response:
 {
-  "question": "Your next question here in ${lang}",
+  "question": "Your reaction + Next question here (in ${lang})",
   "isComplete": false
 }
 `;
 
-// ... (GET_PROMPT_GENERATOR_SYSTEM оставляем без изменений) ...
+// --- 2. Промпт для Генератора (Создает инструкцию для бота) ---
 const GET_PROMPT_GENERATOR_SYSTEM = (lang) => `
 You are an expert AI Prompt Engineer.
 Your goal is to write a highly effective **SYSTEM PROMPT** for a WhatsApp AI Assistant, based on the interview transcript provided.
 
 TARGET LANGUAGE: ${lang} (The generated prompt must be in this language!)
 
-🚨 **CRITICAL INSTRUCTION - PERSPECTIVE**:
+🚨 **CRITICAL INSTRUCTION**:
 - You are writing **INSTRUCTIONS FOR THE AI**, not a biography.
-- **DO NOT** write: "I am a dentist..."
 - **MUST WRITE**: "You are a helpful AI assistant for [Business Name]..."
 - Use imperative commands: "Answer politely", "If asked about prices, say...".
 
 **STRUCTURE OF THE GENERATED PROMPT:**
 
 1. **Role & Identity**:
-   - Define who the AI is (e.g., "You are the virtual receptionist...").
-   - Define the personality.
+   - Define who the AI is (Virtual Assistant).
+   - Define the personality based on the user's tone preference.
 
 2. **Business Context**:
-   - Briefly summarize what the business offers.
+   - Briefly summarize the business.
 
 3. **Knowledge Base (The Facts) - COPY EXACTLY**:
-   - **Services/Products**: List main offerings.
-   - **Logistics/Delivery**: ONLY include this if the business actually offers delivery. If it is a service (lawyer, doctor), OMIT this section.
-   - **Address & Hours**: Exact location and working hours.
-   - **Contacts**: Phone numbers, links.
-   - **Payment Details**: List accepted methods AND specific requisites.
+   - **Services/Products**: List offerings.
+   - **Logistics**: Delivery info (if applicable).
+   - **Address & Hours**: Exact details.
+   - **Payment Details**: Specific methods/numbers.
+   - **Contacts**: Links/Phones.
 
-4. **Behavioral Guidelines (CRITICAL)**:
+4. **Behavioral Guidelines**:
    - "Respond ONLY based on the provided information."
-   - "If you strictly DON'T know the answer based on these instructions, do NOT make it up."
    - "Respond in the same language as the user."
    - "Keep responses concise and mobile-friendly."
    
    ⚠️ **STRICT NEGATIVE CONSTRAINTS**:
-   - "Do NOT instruct the user to contact a manager/human. If you don't know, simply say you don't have that info."
-   - "Do NOT give legal, medical, or financial advice under any circumstances."
+   - "Do NOT instruct the user to contact a manager unless you have a specific number."
+   - "Do NOT give legal, medical, or financial advice."
 
 **OUTPUT**:
-Return **ONLY** the text of the system prompt. No markdown, no intros.
+Return **ONLY** the text of the system prompt. No markdown.
 `;
 
 // --- Хранилище сессий ---
@@ -90,14 +97,12 @@ setInterval(() => {
   }
 }, 15 * 60 * 1000);
 
-// --- Вспомогательная функция проверки PRO ---
+// --- Проверка PRO ---
 async function checkIsPro(deviceId) {
   try {
     const user = await User.findOne({ where: { deviceId } });
     if (!user) return false;
     if (!user.isPro) return false;
-
-    // Проверка даты истечения (если она есть)
     if (
       user.subscriptionExpires &&
       new Date() > new Date(user.subscriptionExpires)
@@ -152,7 +157,7 @@ export async function startInterview(req, res) {
   }
 }
 
-// 2. ANSWER QUESTION
+// 2. ANSWER QUESTION (Живой диалог)
 export async function answerQuestion(req, res) {
   try {
     const { sessionId, answer } = req.body;
@@ -180,7 +185,7 @@ export async function answerQuestion(req, res) {
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-4o-mini",
+        model: "gpt-5.1", // Быстро и качественно
         messages: [
           {
             role: "system",
@@ -188,7 +193,7 @@ export async function answerQuestion(req, res) {
           },
           ...session.messages,
         ],
-        temperature: 0.7,
+        temperature: 0.7, // Температура 0.7 дает креативность и эмоции
         response_format: { type: "json_object" },
       },
       {
@@ -230,11 +235,11 @@ export async function answerQuestion(req, res) {
 // Вспомогательная функция завершения
 function finishInterview(res, session, sessionId, count) {
   const finalPhrases = {
-    ru: "Отлично! Я собрал всю информацию. Генерирую идеальный промпт... ✨",
-    en: "Great! I've gathered all the info. Generating your perfect prompt... ✨",
-    tr: "Harika! Tüm bilgileri topladım. Mükemmel istemi oluşturuyorum... ✨",
-    ky: "Азаматсыз! Бардык маалыматты чогулттум. Идеалдуу промпт түзүп жатам... ✨",
-    uz: "Ajoyib! Barcha ma'lumotlarni to'pladim. Ideal prompt yaratyapman... ✨",
+    ru: "Супер! ✨ Я узнал всё, что нужно. Сейчас создам для вас идеального бота... Пару секунд! ⏳",
+    en: "Awesome! ✨ I have everything I need. Creating your perfect AI assistant now... Just a sec! ⏳",
+    tr: "Harika! ✨ Gerekli her şeyi öğrendim. Mükemmel asistanını oluşturuyorum... Bir saniye! ⏳",
+    ky: "Сонун! ✨ Мен баарын түшүндүм. Сиз үчүн идеалдуу жардамчыны түзүп жатам... Бир секунд! ⏳",
+    uz: "Ajoyib! ✨ Barcha ma'lumotlarni oldim. Ideal yordamchingizni yaratyapman... Bir soniya! ⏳",
   };
 
   const finalMsg = finalPhrases[session.language] || finalPhrases["en"];
@@ -250,7 +255,7 @@ function finishInterview(res, session, sessionId, count) {
   });
 }
 
-// 3. GENERATE FINAL PROMPT
+// 3. GENERATE FINAL PROMPT (С лимитами для Free)
 export async function generatePromptFromInterview(req, res) {
   try {
     const { sessionId } = req.body;
@@ -260,13 +265,12 @@ export async function generatePromptFromInterview(req, res) {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    // 🔥 ПРОВЕРКА НА PRO (с учетом даты истечения)
     const isPro = await checkIsPro(session.deviceId);
 
-    // 🔥 ИНСТРУКЦИЯ ПО ЛИМИТУ
+    // Инструкция по длине
     const lengthInstruction = isPro
-      ? "Make the prompt detailed, professional, and comprehensive (up to 2000 chars). Ensure the tone exactly matches the owner's request."
-      : "CRITICAL: You are generating a prompt for a FREE plan user. The output MUST BE LESS THAN 600 CHARACTERS. Be extremely concise. Omit filler words. Focus ONLY on the core business facts.";
+      ? "Make the prompt detailed, professional, and comprehensive (up to 2000 chars). Capture the unique tone perfectly."
+      : "CRITICAL: You are generating a prompt for a FREE plan user. The output MUST BE LESS THAN 600 CHARACTERS. Be concise but friendly. Include emojis. Focus on core facts.";
 
     const transcript = session.messages
       .map((m) => `${m.role === "user" ? "Owner" : "AI"}: ${m.content}`)
@@ -281,7 +285,7 @@ export async function generatePromptFromInterview(req, res) {
             role: "system",
             content: GET_PROMPT_GENERATOR_SYSTEM(session.language),
           },
-          { role: "system", content: lengthInstruction }, // <-- Добавляем ограничение
+          { role: "system", content: lengthInstruction },
           {
             role: "user",
             content: `Interview Transcript:\n${transcript}`,
@@ -315,17 +319,16 @@ export async function regeneratePrompt(req, res) {
     const session = interviewSessions.get(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
-    // 🔥 ПРОВЕРКА НА PRO (для регенерации тоже нужен лимит)
     const isPro = await checkIsPro(session.deviceId);
 
     const lengthInstruction = isPro
       ? "Make it detailed (up to 2000 chars)."
-      : "CRITICAL: Keep it UNDER 600 CHARACTERS. Concise version.";
+      : "CRITICAL: Keep it UNDER 600 CHARACTERS. Concise but friendly version.";
 
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-5.1",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
@@ -333,7 +336,7 @@ export async function regeneratePrompt(req, res) {
               GET_PROMPT_GENERATOR_SYSTEM(session.language) +
               "\n\nIMPORTANT: Create a DIFFERENT version. Re-phrase the instructions.",
           },
-          { role: "system", content: lengthInstruction }, // <-- Лимит для регенерации
+          { role: "system", content: lengthInstruction },
           {
             role: "user",
             content: `Based on the previous interview transcript.`,
