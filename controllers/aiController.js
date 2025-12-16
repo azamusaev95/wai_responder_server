@@ -83,9 +83,6 @@ export async function aiReply(req, res) {
             console.log(
               `❌ Message limit reached for device: ${deviceId} (${updatedUser.messagesThisMonth}/${FREE_LIMIT})`
             );
-
-            // 🔥 ИЗМЕНЕНИЕ: Отправляем JSON с флагом limitReached
-            // Статус 200, чтобы не было ошибки на клиенте, но reply: null
             return res.json({
               limitReached: true,
               reply: null,
