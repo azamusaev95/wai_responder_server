@@ -83,10 +83,12 @@ export async function aiReply(req, res) {
             console.log(
               `❌ Message limit reached for device: ${deviceId} (${updatedUser.messagesThisMonth}/${FREE_LIMIT})`
             );
-            return res.status(403).json({
-              error: "Message limit reached",
-              reply:
-                "⚠️ FREE версиясынын лимити бүттү (50 билдирүү/айына). PRO версиясына өтүңүз! 🚀",
+
+            // 🔥 ИЗМЕНЕНИЕ: Отправляем JSON с флагом limitReached
+            // Статус 200, чтобы не было ошибки на клиенте, но reply: null
+            return res.json({
+              limitReached: true,
+              reply: null,
               limit: {
                 used: updatedUser.messagesThisMonth,
                 total: FREE_LIMIT,
@@ -107,18 +109,29 @@ export async function aiReply(req, res) {
     }
 
     // ========== ПОДГОТОВКА СИСТЕМНОГО ПРОМПТА ==========
-    // Добавляем инструкцию для молчания
-    // Мы говорим AI: "Если вопрос не по теме бизнеса, или ты не знаешь ответа, верни ТОЛЬКО [SILENCE]"
+    // Жесткие правила молчания и безопасности
     const modifiedSystemPrompt = `${systemPrompt}
 
-    🛑 IMPORTANT RULE:
-    If the user's message is:
-    1. Irrelevant to the business described above.
-    2. Just a generic "Ok", "Thanks", "👍" that doesn't need a reply.
-    3. Something you don't know the answer to based on the info provided.
+    🛑 CRITICAL OVERRIDE RULES (Follow strictly):
     
-    Then output EXACTLY and ONLY this word: ${SILENCE_TOKEN}
-    Do not apologize, do not say "I don't know". Just: ${SILENCE_TOKEN}`;
+    1. **MISSING INFORMATION = SILENCE**:
+       - If the user asks something NOT found in the provided business info/catalog...
+       - OR if you would normally reply "I don't know" or "Please contact the manager"...
+       - **DO NOT** say "I don't know". **DO NOT** tell them to call support.
+       - INSTEAD, OUTPUT ONLY: ${SILENCE_TOKEN}
+
+    2. **SAFETY GUARDRAILS (NO LIABILITY)**:
+       - You are FORBIDDEN from giving professional **Legal, Financial, or Medical advice**.
+       - Even if you think you know the answer, do not risk it.
+       - Treat these questions as "Irrelevant" or "Unknown".
+       - OUTPUT ONLY: ${SILENCE_TOKEN}
+
+    3. **IRRELEVANCE**:
+       - If the user's message is unrelated to the business (e.g., asking about weather, politics, math homework).
+       - OR if it's a generic "Ok", "Thanks", "👍".
+       - OUTPUT ONLY: ${SILENCE_TOKEN}
+
+    YOUR GOAL: Respond ONLY if you can be helpful regarding the specific business services. Otherwise, stay silent.`;
 
     // ========== ПОДГОТОВКА СООБЩЕНИЯ ==========
     const userMessage = [
@@ -138,7 +151,7 @@ export async function aiReply(req, res) {
       {
         model,
         messages: [
-          { role: "system", content: modifiedSystemPrompt }, // Используем модифицированный промпт
+          { role: "system", content: modifiedSystemPrompt },
           { role: "user", content: userMessage.join("\n") },
         ],
         temperature: clamp(+temperature, 0, 1),
@@ -159,12 +172,11 @@ export async function aiReply(req, res) {
     // ========== ПРОВЕРКА НА МОЛЧАНИЕ ==========
     if (reply.includes(SILENCE_TOKEN)) {
       console.log(`🤫 AI decided to stay silent for device: ${deviceId}`);
-      reply = null; // Отправляем null
+      reply = null;
       shouldReply = false;
     }
 
     // ========== УВЕЛИЧИТЬ СЧЁТЧИК ==========
-    // (Счетчик увеличиваем в любом случае, так как мы потратили токены OpenAI на проверку)
     if (deviceId) {
       const user = await User.findOne({ where: { deviceId } });
       if (user) {
@@ -177,10 +189,9 @@ export async function aiReply(req, res) {
     }
 
     // Возвращаем ответ
-    // На клиенте (в Android) нужно проверить: if (response.reply === null) { ничего не делать }
     res.json({
       reply: reply,
-      silence: !shouldReply, // Доп. флаг для удобства
+      silence: !shouldReply,
     });
   } catch (e) {
     const status = e?.response?.status || 500;

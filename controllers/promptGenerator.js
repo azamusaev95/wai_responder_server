@@ -2,7 +2,7 @@ import axios from "axios";
 import User from "../models/User.js";
 import { FIRST_QUESTIONS } from "../constants/firstQuestions.js";
 
-// --- 1. Промпт для AI-Интервьюера (сбор данных) ---
+// ... (GET_AI_INTERVIEWER_PROMPT оставляем без изменений) ...
 const GET_AI_INTERVIEWER_PROMPT = (lang) => `
 You are an expert business analyst and AI prompt specialist.
 Your task is to conduct a structured interview with a business owner to gather information for building their AI WhatsApp chatbot.
@@ -34,7 +34,7 @@ Always reply with a JSON object:
 }
 `;
 
-// --- 2. Промпт для Генератора (создает финальную инструкцию) ---
+// ... (GET_PROMPT_GENERATOR_SYSTEM оставляем без изменений) ...
 const GET_PROMPT_GENERATOR_SYSTEM = (lang) => `
 You are an expert AI Prompt Engineer.
 Your goal is to write a highly effective **SYSTEM PROMPT** for a WhatsApp AI Assistant, based on the interview transcript provided.
@@ -64,11 +64,14 @@ TARGET LANGUAGE: ${lang} (The generated prompt must be in this language!)
    - **Payment Details**: List accepted methods AND specific requisites.
 
 4. **Behavioral Guidelines (CRITICAL)**:
-   - "If the user asks something UNRELATED to this business, politely explain that you can only help with questions related to [Business Name]."
-   - "If you strictly DON'T know the answer based on these instructions, simply apologize and say you don't have that information right now."
+   - "Respond ONLY based on the provided information."
+   - "If you strictly DON'T know the answer based on these instructions, do NOT make it up."
    - "Respond in the same language as the user."
    - "Keep responses concise and mobile-friendly."
-   - "Do NOT instruct the user to contact a manager unless a specific support number is provided."
+   
+   ⚠️ **STRICT NEGATIVE CONSTRAINTS**:
+   - "Do NOT instruct the user to contact a manager/human. If you don't know, simply say you don't have that info."
+   - "Do NOT give legal, medical, or financial advice under any circumstances."
 
 **OUTPUT**:
 Return **ONLY** the text of the system prompt. No markdown, no intros.
@@ -86,6 +89,27 @@ setInterval(() => {
     }
   }
 }, 15 * 60 * 1000);
+
+// --- Вспомогательная функция проверки PRO ---
+async function checkIsPro(deviceId) {
+  try {
+    const user = await User.findOne({ where: { deviceId } });
+    if (!user) return false;
+    if (!user.isPro) return false;
+
+    // Проверка даты истечения (если она есть)
+    if (
+      user.subscriptionExpires &&
+      new Date() > new Date(user.subscriptionExpires)
+    ) {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("Pro check error:", e);
+    return false;
+  }
+}
 
 // ==========================================
 // API HANDLERS
@@ -156,7 +180,7 @@ export async function answerQuestion(req, res) {
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-5.1",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
@@ -236,19 +260,13 @@ export async function generatePromptFromInterview(req, res) {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    let isPro = false;
-    try {
-      const user = await User.findOne({
-        where: { deviceId: session.deviceId },
-      });
-      if (user && user.isPro) isPro = true;
-    } catch (e) {
-      console.error("User check error", e);
-    }
+    // 🔥 ПРОВЕРКА НА PRO (с учетом даты истечения)
+    const isPro = await checkIsPro(session.deviceId);
 
+    // 🔥 ИНСТРУКЦИЯ ПО ЛИМИТУ
     const lengthInstruction = isPro
-      ? "Make the prompt detailed and comprehensive (up to 1500 chars). Ensure the tone matches the owner's request."
-      : "STRICT LIMIT: Keep under 600 chars. Focus on the most important business details.";
+      ? "Make the prompt detailed, professional, and comprehensive (up to 2000 chars). Ensure the tone exactly matches the owner's request."
+      : "CRITICAL: You are generating a prompt for a FREE plan user. The output MUST BE LESS THAN 600 CHARACTERS. Be extremely concise. Omit filler words. Focus ONLY on the core business facts.";
 
     const transcript = session.messages
       .map((m) => `${m.role === "user" ? "Owner" : "AI"}: ${m.content}`)
@@ -263,7 +281,7 @@ export async function generatePromptFromInterview(req, res) {
             role: "system",
             content: GET_PROMPT_GENERATOR_SYSTEM(session.language),
           },
-          { role: "system", content: lengthInstruction },
+          { role: "system", content: lengthInstruction }, // <-- Добавляем ограничение
           {
             role: "user",
             content: `Interview Transcript:\n${transcript}`,
@@ -297,6 +315,13 @@ export async function regeneratePrompt(req, res) {
     const session = interviewSessions.get(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
+    // 🔥 ПРОВЕРКА НА PRO (для регенерации тоже нужен лимит)
+    const isPro = await checkIsPro(session.deviceId);
+
+    const lengthInstruction = isPro
+      ? "Make it detailed (up to 2000 chars)."
+      : "CRITICAL: Keep it UNDER 600 CHARACTERS. Concise version.";
+
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -308,6 +333,7 @@ export async function regeneratePrompt(req, res) {
               GET_PROMPT_GENERATOR_SYSTEM(session.language) +
               "\n\nIMPORTANT: Create a DIFFERENT version. Re-phrase the instructions.",
           },
+          { role: "system", content: lengthInstruction }, // <-- Лимит для регенерации
           {
             role: "user",
             content: `Based on the previous interview transcript.`,
