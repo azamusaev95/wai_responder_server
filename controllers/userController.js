@@ -113,12 +113,46 @@ const getStatus = async (req, res) => {
 // ==========================================================
 const verifyPurchase = async (req, res) => {
   try {
-    // Логируем тело как есть, чтобы видеть, что реально прилетает
-    log("VERIFY-RAW-BODY", "Тело запроса verify-purchase:", req.body);
+    // 1. Логируем сырое тело и тип
+    log("VERIFY-RAW-BODY", "Тело запроса verify-purchase (raw):", {
+      type: typeof req.body,
+      body: req.body,
+    });
 
-    const { deviceId, purchaseToken, token, productId } = req.body;
+    // 2. Пробуем аккуратно распарсить
+    let parsedBody = req.body;
 
-    // Иногда SDK может назвать поле token, поэтому делаем универсально
+    // Если body строка — пробуем JSON.parse
+    if (typeof parsedBody === "string") {
+      try {
+        parsedBody = JSON.parse(parsedBody);
+        log("VERIFY-PARSED", "req.body был строкой, распарсили:", parsedBody);
+      } catch (e) {
+        log(
+          "VERIFY-PARSE-ERROR",
+          "Не удалось распарсить body как JSON:",
+          parsedBody
+        );
+        return res
+          .status(400)
+          .json({ error: "Invalid JSON in request body for verify-purchase" });
+      }
+    }
+
+    // Если почему-то null/undefined — считаем, что это ошибка
+    if (!parsedBody || typeof parsedBody !== "object") {
+      log(
+        "VERIFY-BAD-BODY",
+        "parsedBody не объект после обработки:",
+        parsedBody
+      );
+      return res
+        .status(400)
+        .json({ error: "Bad request body for verify-purchase" });
+    }
+
+    // 3. Уже из parsedBody достаём поля
+    const { deviceId, purchaseToken, token, productId } = parsedBody;
     const finalToken = purchaseToken || token;
 
     log("VERIFY-START", "Данные покупки (parsed):", {
@@ -127,11 +161,17 @@ const verifyPurchase = async (req, res) => {
       purchaseToken: finalToken,
     });
 
+    // 4. Проверка обязательных полей
     if (!deviceId || !finalToken) {
-      log("VERIFY-FAILED", "Отсутствует deviceId или purchaseToken");
+      log("VERIFY-FAILED", "Отсутствует deviceId или purchaseToken", {
+        deviceId,
+        finalToken,
+        parsedBody,
+      });
       return res.status(400).json({ error: "Missing required fields" });
     }
 
+    // 5. Ищем пользователя и активируем PRO
     const user = await User.findOne({ where: { deviceId } });
 
     if (!user) {
@@ -143,12 +183,11 @@ const verifyPurchase = async (req, res) => {
 
     const now = new Date();
 
-    // Активируем PRO
     user.isPro = true;
     user.subscriptionExpires = new Date(
       now.getTime() + 30 * 24 * 60 * 60 * 1000
     );
-    user.purchaseToken = finalToken; // сохраняем токен для дальнейших RTDN
+    user.purchaseToken = finalToken;
     user.messagesThisMonth = 0;
     user.messagesResetDate = null;
 
