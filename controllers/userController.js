@@ -1,19 +1,19 @@
-// controllers/userController.js
 import User from "../models/User.js";
 
-const USE_FAKE_GOOGLE_PLAY = process.env.USE_FAKE_GOOGLE_PLAY === "true";
-
-// Проверка активности подписки
-const isSubscriptionActive = (user) => {
-  if (!user.isPro) return false;
-  if (!user.subscriptionExpires) return true; // Бессрочная
-  return new Date() < new Date(user.subscriptionExpires);
+// Вспомогательная функция для логирования (будет видна в Railway)
+const log = (tag, message, data = "") => {
+  const timestamp = new Date().toISOString();
+  console.log(
+    `[${timestamp}] [${tag}] ${message}`,
+    data ? JSON.stringify(data, null, 2) : ""
+  );
 };
 
 // POST /api/user/init - Инициализация пользователя
 const initUser = async (req, res) => {
   try {
     const { deviceId } = req.body;
+    log("INIT", "Запрос инициализации для deviceId:", deviceId);
 
     if (!deviceId) {
       return res.status(400).json({ error: "deviceId is required" });
@@ -27,20 +27,25 @@ const initUser = async (req, res) => {
         deviceId,
         isPro: false,
         messagesThisMonth: 0,
-        messagesResetDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000), // +30 дней от создания
+        messagesResetDate: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
         createdAt: now,
       },
     });
 
+    log(
+      "INIT",
+      created ? "Создан новый пользователь" : "Пользователь найден в базе"
+    );
+
     const updatedUser = await updateUserStatus(user);
 
-    // Проверить, нужно ли сбросить счетчик сообщений (только для FREE)
+    // Проверить сброс счетчика сообщений (для FREE)
     if (!updatedUser.isPro) {
       if (
         updatedUser.messagesResetDate &&
         now >= new Date(updatedUser.messagesResetDate)
       ) {
-        // Прошло 30 дней - сбросить счетчик и установить новую дату
+        log("INIT", "Сброс счетчика сообщений по истечении 30 дней");
         updatedUser.messagesThisMonth = 0;
         updatedUser.messagesResetDate = new Date(
           now.getTime() + 30 * 24 * 60 * 60 * 1000
@@ -49,9 +54,8 @@ const initUser = async (req, res) => {
       }
     }
 
-    // Вычислить оставшиеся сообщения для FREE
     const messagesRemaining = updatedUser.isPro
-      ? null // для PRO - безлимит
+      ? null
       : Math.max(0, 50 - (updatedUser.messagesThisMonth || 0));
 
     res.json({
@@ -64,7 +68,7 @@ const initUser = async (req, res) => {
       messagesRemaining: messagesRemaining,
     });
   } catch (error) {
-    console.error("Error in initUser:", error);
+    log("INIT-ERROR", error.message);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -73,6 +77,7 @@ const initUser = async (req, res) => {
 const getStatus = async (req, res) => {
   try {
     const { deviceId } = req.query;
+    log("STATUS-GET", "Проверка статуса для:", deviceId);
 
     if (!deviceId) {
       return res.status(400).json({ error: "deviceId is required" });
@@ -92,99 +97,118 @@ const getStatus = async (req, res) => {
       subscriptionExpiresAt: updatedUser.subscriptionExpires,
     });
   } catch (error) {
-    console.error("Error in getStatus:", error);
+    log("STATUS-ERROR", error.message);
     res.status(500).json({ error: "Internal server error" });
   }
 };
 
-// POST /api/user/verify-purchase - Верификация покупки и активация PRO
+// POST /api/user/verify-purchase - Верификация покупки
 const verifyPurchase = async (req, res) => {
   try {
     const { deviceId, purchaseToken } = req.body;
+    log("VERIFY-START", "Данные покупки:", { deviceId, purchaseToken });
 
     if (!deviceId || !purchaseToken) {
+      log("VERIFY-FAILED", "Отсутствует deviceId или purchaseToken");
       return res.status(400).json({ error: "Missing required fields" });
     }
 
     const user = await User.findOne({ where: { deviceId } });
 
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      log("VERIFY-FAILED", "Пользователь не найден в БД при покупке");
+      return res.status(404).json({ error: "User not found in database" });
     }
 
     const now = new Date();
 
-    // Активировать PRO на 30 дней от момента покупки
+    // Активируем PRO
     user.isPro = true;
     user.subscriptionExpires = new Date(
       now.getTime() + 30 * 24 * 60 * 60 * 1000
-    ); // +30 дней
+    );
     user.purchaseToken = purchaseToken;
-
-    // Сбросить счетчик сообщений при активации PRO
     user.messagesThisMonth = 0;
-    user.messagesResetDate = null; // для PRO не нужна дата сброса
+    user.messagesResetDate = null;
 
     await user.save();
+    log(
+      "VERIFY-SUCCESS",
+      `PRO активирован для ${deviceId} до ${user.subscriptionExpires}`
+    );
 
     res.json({
       success: true,
       isPro: true,
       subscriptionExpiresAt: user.subscriptionExpires,
-      messagesRemaining: null, // безлимит
+      messagesRemaining: null,
     });
   } catch (error) {
-    console.error("Error in verifyPurchase:", error);
-    res.status(500).json({ error: "Internal server error" });
+    log("VERIFY-CRITICAL", error.message);
+    res.status(500).json({ error: "Server database error: " + error.message });
   }
 };
 
+// Обновление статуса (проверка истечения)
 const updateUserStatus = async (user) => {
   const now = new Date();
 
-  // Проверить, не истекла ли PRO подписка
   if (
     user.isPro &&
     user.subscriptionExpires &&
     now >= new Date(user.subscriptionExpires)
   ) {
+    log(
+      "AUTO-CHECK",
+      `Подписка истекла для ${user.deviceId}. Возврат на FREE.`
+    );
     user.isPro = false;
     user.subscriptionExpires = null;
-
-    // Восстановить FREE лимиты
     user.messagesThisMonth = 0;
     user.messagesResetDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-
     await user.save();
   }
 
   return user;
 };
 
+// POST /api/user/google-webhook - Вебхук от Google Play
 const googleWebhook = async (req, res) => {
   try {
-    // Данные приходят в формате base64
     const data = req.body.message.data;
     const decoded = JSON.parse(Buffer.from(data, "base64").toString());
+    log("RTDN-RECEIVED", "Уведомление от Google:", decoded);
 
-    console.log("[RTDN] Получено тестовое или реальное уведомление:", decoded);
-
-    // Если это реальное продление (notificationType === 2)
     const { purchaseToken, notificationType } =
       decoded.subscriptionNotification || {};
-    if (purchaseToken && notificationType === 2) {
+
+    if (purchaseToken) {
       const user = await User.findOne({ where: { purchaseToken } });
-      if (user) {
+
+      if (!user) {
+        log("RTDN-WARN", "Пользователь с этим токеном не найден в базе.");
+        return res.status(200).send("OK");
+      }
+
+      // 1 (Purchase), 2 (Renewed), 4 (Recovered) - Активация
+      if ([1, 2, 4].includes(notificationType)) {
         const newExpire = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
         await user.update({ isPro: true, subscriptionExpires: newExpire });
-        console.log(`[RTDN] Подписка для ${user.deviceId} продлена!`);
+        log(
+          "RTDN-SUCCESS",
+          `Статус обновлен для ${user.deviceId}, тип: ${notificationType}`
+        );
+      }
+      // 3 (Canceled), 12 (Expired) - Отключение
+      else if ([3, 12].includes(notificationType)) {
+        await user.update({ isPro: false });
+        log("RTDN-CANCEL", `Подписка отключена для ${user.deviceId}`);
       }
     }
 
-    // Обязательно шлем 200 OK
     res.status(200).send("OK");
   } catch (err) {
-    console.error("[RTDN] Ошибка:", err.message);
+    log("RTDN-ERROR", err.message);
     res.status(200).send("OK");
   }
 };
