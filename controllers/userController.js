@@ -161,4 +161,32 @@ const updateUserStatus = async (user) => {
   return user;
 };
 
-export { initUser, getStatus, verifyPurchase };
+const googleWebhook = async (req, res) => {
+  try {
+    // Данные приходят в формате base64
+    const data = req.body.message.data;
+    const decoded = JSON.parse(Buffer.from(data, "base64").toString());
+
+    console.log("[RTDN] Получено тестовое или реальное уведомление:", decoded);
+
+    // Если это реальное продление (notificationType === 2)
+    const { purchaseToken, notificationType } =
+      decoded.subscriptionNotification || {};
+    if (purchaseToken && notificationType === 2) {
+      const user = await User.findOne({ where: { purchaseToken } });
+      if (user) {
+        const newExpire = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        await user.update({ isPro: true, subscriptionExpires: newExpire });
+        console.log(`[RTDN] Подписка для ${user.deviceId} продлена!`);
+      }
+    }
+
+    // Обязательно шлем 200 OK
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("[RTDN] Ошибка:", err.message);
+    res.status(200).send("OK");
+  }
+};
+
+export { initUser, getStatus, verifyPurchase, googleWebhook };
