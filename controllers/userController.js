@@ -9,7 +9,9 @@ const log = (tag, message, data = "") => {
   );
 };
 
+// ==========================================================
 // POST /api/user/init - Инициализация пользователя
+// ==========================================================
 const initUser = async (req, res) => {
   try {
     const { deviceId } = req.body;
@@ -37,9 +39,10 @@ const initUser = async (req, res) => {
       created ? "Создан новый пользователь" : "Пользователь найден в базе"
     );
 
+    // Проверяем срок подписки и обновляем статус при необходимости
     const updatedUser = await updateUserStatus(user);
 
-    // Проверить сброс счетчика сообщений (для FREE)
+    // Проверка сброса счетчика сообщений (для FREE)
     if (!updatedUser.isPro) {
       if (
         updatedUser.messagesResetDate &&
@@ -65,7 +68,7 @@ const initUser = async (req, res) => {
       subscriptionExpiresAt: updatedUser.subscriptionExpires,
       messagesThisMonth: updatedUser.messagesThisMonth || 0,
       messagesResetDate: updatedUser.messagesResetDate,
-      messagesRemaining: messagesRemaining,
+      messagesRemaining,
     });
   } catch (error) {
     log("INIT-ERROR", error.message);
@@ -73,7 +76,9 @@ const initUser = async (req, res) => {
   }
 };
 
+// ==========================================================
 // GET /api/user/status - Получить статус пользователя
+// ==========================================================
 const getStatus = async (req, res) => {
   try {
     const { deviceId } = req.query;
@@ -102,13 +107,27 @@ const getStatus = async (req, res) => {
   }
 };
 
+// ==========================================================
 // POST /api/user/verify-purchase - Верификация покупки
+// вызывается ПРИЛОЖЕНИЕМ после requestSubscription
+// ==========================================================
 const verifyPurchase = async (req, res) => {
   try {
-    const { deviceId, purchaseToken } = req.body;
-    log("VERIFY-START", "Данные покупки:", { deviceId, purchaseToken });
+    // Логируем тело как есть, чтобы видеть, что реально прилетает
+    log("VERIFY-RAW-BODY", "Тело запроса verify-purchase:", req.body);
 
-    if (!deviceId || !purchaseToken) {
+    const { deviceId, purchaseToken, token, productId } = req.body;
+
+    // Иногда SDK может назвать поле token, поэтому делаем универсально
+    const finalToken = purchaseToken || token;
+
+    log("VERIFY-START", "Данные покупки (parsed):", {
+      deviceId,
+      productId,
+      purchaseToken: finalToken,
+    });
+
+    if (!deviceId || !finalToken) {
       log("VERIFY-FAILED", "Отсутствует deviceId или purchaseToken");
       return res.status(400).json({ error: "Missing required fields" });
     }
@@ -116,7 +135,9 @@ const verifyPurchase = async (req, res) => {
     const user = await User.findOne({ where: { deviceId } });
 
     if (!user) {
-      log("VERIFY-FAILED", "Пользователь не найден в БД при покупке");
+      log("VERIFY-FAILED", "Пользователь не найден в БД при покупке", {
+        deviceId,
+      });
       return res.status(404).json({ error: "User not found in database" });
     }
 
@@ -127,14 +148,15 @@ const verifyPurchase = async (req, res) => {
     user.subscriptionExpires = new Date(
       now.getTime() + 30 * 24 * 60 * 60 * 1000
     );
-    user.purchaseToken = purchaseToken;
+    user.purchaseToken = finalToken; // сохраняем токен для дальнейших RTDN
     user.messagesThisMonth = 0;
     user.messagesResetDate = null;
 
     await user.save();
     log(
       "VERIFY-SUCCESS",
-      `PRO активирован для ${deviceId} до ${user.subscriptionExpires}`
+      `PRO активирован для ${deviceId} до ${user.subscriptionExpires}`,
+      { purchaseToken: finalToken }
     );
 
     res.json({
@@ -149,7 +171,9 @@ const verifyPurchase = async (req, res) => {
   }
 };
 
-// Обновление статуса (проверка истечения)
+// ==========================================================
+// Вспомогательная функция: обновление статуса при истечении
+// ==========================================================
 const updateUserStatus = async (user) => {
   const now = new Date();
 
@@ -172,43 +196,85 @@ const updateUserStatus = async (user) => {
   return user;
 };
 
-// POST /api/user/google-webhook - Вебхук от Google Play
+// ==========================================================
+// POST /api/user/google-webhook - Вебхук от Google Play (RTDN)
+// сюда шлёт САМ GOOGLE, не приложение
+// ==========================================================
 const googleWebhook = async (req, res) => {
   try {
-    const data = req.body.message.data;
-    const decoded = JSON.parse(Buffer.from(data, "base64").toString());
-    log("RTDN-RECEIVED", "Уведомление от Google:", decoded);
+    const message = req.body?.message;
+    if (!message || !message.data) {
+      log("RTDN-ERROR", "Нет message.data в webhook", req.body);
+      return res.status(200).send("OK");
+    }
 
-    const { purchaseToken, notificationType } =
-      decoded.subscriptionNotification || {};
+    const decoded = JSON.parse(Buffer.from(message.data, "base64").toString());
+    log("RTDN-RECEIVED", "Уведомление от Google (decoded):", decoded);
 
-    if (purchaseToken) {
-      const user = await User.findOne({ where: { purchaseToken } });
+    // Универсальный парсинг purchaseToken и notificationType
+    let purchaseToken;
+    let notificationType;
 
-      if (!user) {
-        log("RTDN-WARN", "Пользователь с этим токеном не найден в базе.");
-        return res.status(200).send("OK");
-      }
+    if (decoded.subscriptionNotification) {
+      purchaseToken = decoded.subscriptionNotification.purchaseToken;
+      notificationType = decoded.subscriptionNotification.notificationType;
+    }
 
-      // 1 (Purchase), 2 (Renewed), 4 (Recovered) - Активация
-      if ([1, 2, 4].includes(notificationType)) {
-        const newExpire = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-        await user.update({ isPro: true, subscriptionExpires: newExpire });
-        log(
-          "RTDN-SUCCESS",
-          `Статус обновлен для ${user.deviceId}, тип: ${notificationType}`
-        );
-      }
-      // 3 (Canceled), 12 (Expired) - Отключение
-      else if ([3, 12].includes(notificationType)) {
-        await user.update({ isPro: false });
-        log("RTDN-CANCEL", `Подписка отключена для ${user.deviceId}`);
-      }
+    // Фоллбэк: некоторые RTDN содержат purchaseToken и notificationType на верхнем уровне
+    if (!purchaseToken && decoded.purchaseToken) {
+      purchaseToken = decoded.purchaseToken;
+    }
+    if (
+      (notificationType === undefined || notificationType === null) &&
+      decoded.notificationType !== undefined
+    ) {
+      notificationType = decoded.notificationType;
+    }
+
+    if (!purchaseToken) {
+      log(
+        "RTDN-WARN",
+        "Не удалось извлечь purchaseToken из уведомления",
+        decoded
+      );
+      return res.status(200).send("OK");
+    }
+
+    const user = await User.findOne({ where: { purchaseToken } });
+
+    if (!user) {
+      log("RTDN-WARN", "Пользователь с этим токеном не найден в базе.", {
+        purchaseToken,
+      });
+      return res.status(200).send("OK");
+    }
+
+    // 1 (PURCHASED), 2 (RENEWED), 4 (RECOVERED) - активация/продление
+    if ([1, 2, 4].includes(Number(notificationType))) {
+      const newExpire = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      await user.update({ isPro: true, subscriptionExpires: newExpire });
+      log(
+        "RTDN-SUCCESS",
+        `Статус обновлен для ${user.deviceId}, тип: ${notificationType}`,
+        { newExpire }
+      );
+    }
+    // 3 (CANCELED), 12 (EXPIRED) - отключение
+    else if ([3, 12].includes(Number(notificationType))) {
+      await user.update({ isPro: false });
+      log("RTDN-CANCEL", `Подписка отключена для ${user.deviceId}`, {
+        notificationType,
+      });
+    } else {
+      log("RTDN-INFO", "Необработанный notificationType", {
+        notificationType,
+      });
     }
 
     res.status(200).send("OK");
   } catch (err) {
     log("RTDN-ERROR", err.message);
+    // RTDN всегда ждёт 200, даже если у нас ошибка
     res.status(200).send("OK");
   }
 };
