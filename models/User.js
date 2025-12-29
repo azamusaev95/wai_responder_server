@@ -46,7 +46,7 @@ const User = sequelize.define(
     messagesResetDate: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW,
-      allowNull: false,
+      allowNull: true,
       field: "messages_reset_date",
     },
   },
