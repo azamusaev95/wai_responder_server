@@ -111,8 +111,15 @@ const getStatus = async (req, res) => {
 // POST /api/user/verify-purchase - Верификация покупки
 // вызывается ПРИЛОЖЕНИЕМ после requestSubscription
 // ==========================================================
+// ==========================================================
+// POST /api/user/verify-purchase - Верификация покупки
+// вызывается ПРИЛОЖЕНИЕМ после requestSubscription
+// ==========================================================
 const verifyPurchase = async (req, res) => {
   try {
+    // 0. Что реально пришло в Express
+    log("VERIFY-ENTRY", "req.body как пришло в Express:", req.body);
+
     // 1. Логируем сырое тело и тип
     log("VERIFY-RAW-BODY", "Тело запроса verify-purchase (raw):", {
       type: typeof req.body,
@@ -122,11 +129,25 @@ const verifyPurchase = async (req, res) => {
     // 2. Пробуем аккуратно распарсить
     let parsedBody = req.body;
 
-    // Если body строка — пробуем JSON.parse
+    // 2.1. Если тело почему-то завернули в { body: {...} } — распакуем
+    if (parsedBody && typeof parsedBody === "object" && parsedBody.body) {
+      log(
+        "VERIFY-UNWRAP",
+        "Обнаружен parsedBody.body, распаковываем",
+        parsedBody
+      );
+      parsedBody = parsedBody.body;
+    }
+
+    // 2.2. Если body строка — пробуем JSON.parse
     if (typeof parsedBody === "string") {
       try {
         parsedBody = JSON.parse(parsedBody);
-        log("VERIFY-PARSED", "req.body был строкой, распарсили:", parsedBody);
+        log(
+          "VERIFY-PARSED",
+          "req.body был строкой, распарсили в объект:",
+          parsedBody
+        );
       } catch (e) {
         log(
           "VERIFY-PARSE-ERROR",
@@ -139,7 +160,7 @@ const verifyPurchase = async (req, res) => {
       }
     }
 
-    // Если почему-то null/undefined — считаем, что это ошибка
+    // 2.3. Проверяем, что в итоге у нас объект
     if (!parsedBody || typeof parsedBody !== "object") {
       log(
         "VERIFY-BAD-BODY",
@@ -151,15 +172,25 @@ const verifyPurchase = async (req, res) => {
         .json({ error: "Bad request body for verify-purchase" });
     }
 
-    // 3. Уже из parsedBody достаём поля
+    // 2.4. Лог финального тела после всех манипуляций
+    log("VERIFY-BODY-PARSED", "parsedBody после обработки:", parsedBody);
+
+    // 3. Достаём поля
     const { deviceId, purchaseToken, token, productId } = parsedBody;
     const finalToken = purchaseToken || token;
+    const hasToken = !!finalToken;
 
-    log("VERIFY-START", "Данные покупки (parsed):", {
-      deviceId,
-      productId,
-      purchaseToken: finalToken,
-    });
+    log(
+      "VERIFY-START",
+      hasToken
+        ? "Данные покупки (parsed), токен есть ✅"
+        : "Данные покупки (parsed), токена нет ⚠️",
+      {
+        deviceId,
+        productId,
+        purchaseToken: finalToken || null,
+      }
+    );
 
     // 4. Проверка обязательных полей
     if (!deviceId || !finalToken) {
@@ -171,7 +202,7 @@ const verifyPurchase = async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // 5. Ищем пользователя и активируем PRO
+    // 5. Ищем пользователя по deviceId
     const user = await User.findOne({ where: { deviceId } });
 
     if (!user) {
@@ -181,24 +212,26 @@ const verifyPurchase = async (req, res) => {
       return res.status(404).json({ error: "User not found in database" });
     }
 
+    // 6. Активируем PRO и сохраняем purchaseToken
     const now = new Date();
 
     user.isPro = true;
     user.subscriptionExpires = new Date(
       now.getTime() + 30 * 24 * 60 * 60 * 1000
     );
-    user.purchaseToken = finalToken;
+    user.purchaseToken = finalToken; // ВАЖНО: сохраняем токен для RTDN
     user.messagesThisMonth = 0;
     user.messagesResetDate = null;
 
     await user.save();
+
     log(
       "VERIFY-SUCCESS",
       `PRO активирован для ${deviceId} до ${user.subscriptionExpires}`,
       { purchaseToken: finalToken }
     );
 
-    res.json({
+    return res.json({
       success: true,
       isPro: true,
       subscriptionExpiresAt: user.subscriptionExpires,
@@ -206,7 +239,9 @@ const verifyPurchase = async (req, res) => {
     });
   } catch (error) {
     log("VERIFY-CRITICAL", error.message);
-    res.status(500).json({ error: "Server database error: " + error.message });
+    return res.status(500).json({
+      error: "Server database error: " + error.message,
+    });
   }
 };
 
