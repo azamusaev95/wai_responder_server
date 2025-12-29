@@ -1,9 +1,6 @@
 import axios from "axios";
 import User from "../models/User.js";
 
-// Кодовое слово, которое AI должен вернуть, если нужно промолчать
-const SILENCE_TOKEN = "[SILENCE]";
-
 function clamp(v, lo, hi) {
   if (typeof v !== "number" || Number.isNaN(v)) return lo;
   return Math.max(lo, Math.min(hi, v));
@@ -106,29 +103,14 @@ export async function aiReply(req, res) {
     }
 
     // ========== ПОДГОТОВКА СИСТЕМНОГО ПРОМПТА ==========
-    // Жесткие правила молчания и безопасности
+    // Мягкие правила безопасности, без SILENCE
     const modifiedSystemPrompt = `${systemPrompt}
 
-    🛑 CRITICAL OVERRIDE RULES (Follow strictly):
-    
-    1. **MISSING INFORMATION = SILENCE**:
-       - If the user asks something NOT found in the provided business info/catalog...
-       - OR if you would normally reply "I don't know" or "Please contact the manager"...
-       - **DO NOT** say "I don't know". **DO NOT** tell them to call support.
-       - INSTEAD, OUTPUT ONLY: ${SILENCE_TOKEN}
-
-    2. **SAFETY GUARDRAILS (NO LIABILITY)**:
-       - You are FORBIDDEN from giving professional **Legal, Financial, or Medical advice**.
-       - Even if you think you know the answer, do not risk it.
-       - Treat these questions as "Irrelevant" or "Unknown".
-       - OUTPUT ONLY: ${SILENCE_TOKEN}
-
-    3. **IRRELEVANCE**:
-       - If the user's message is unrelated to the business (e.g., asking about weather, politics, math homework).
-       - OR if it's a generic "Ok", "Thanks", "👍".
-       - OUTPUT ONLY: ${SILENCE_TOKEN}
-
-    YOUR GOAL: Respond ONLY if you can be helpful regarding the specific business services. Otherwise, stay silent.`;
+SAFETY RULES:
+- Do NOT provide professional Legal, Financial, or Medical advice.
+- If the user asks about these topics, briefly say you are not allowed to advise and suggest contacting a specialist.
+- Prefer to answer only questions related to this specific business, its products, services and catalog.
+- If required information is missing, politely say you don't know or that the manager can clarify.`;
 
     // ========== ПОДГОТОВКА СООБЩЕНИЯ ==========
     const userMessage = [
@@ -164,14 +146,6 @@ export async function aiReply(req, res) {
     );
 
     let reply = resp?.data?.choices?.[0]?.message?.content?.trim() || "";
-    let shouldReply = true;
-
-    // ========== ПРОВЕРКА НА МОЛЧАНИЕ ==========
-    if (reply.includes(SILENCE_TOKEN)) {
-      console.log(`🤫 AI decided to stay silent for device: ${deviceId}`);
-      reply = null;
-      shouldReply = false;
-    }
 
     // ========== УВЕЛИЧИТЬ СЧЁТЧИК ==========
     if (deviceId) {
@@ -185,10 +159,10 @@ export async function aiReply(req, res) {
       }
     }
 
-    // Возвращаем ответ
+    // Возвращаем ответ (без SILENCE-механики)
     res.json({
-      reply: reply,
-      silence: !shouldReply,
+      reply,
+      silence: false,
     });
   } catch (e) {
     const status = e?.response?.status || 500;
