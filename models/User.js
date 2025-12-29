@@ -49,6 +49,11 @@ const User = sequelize.define(
       allowNull: true,
       field: "messages_reset_date",
     },
+    disableFreeTier: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
   },
 
   {

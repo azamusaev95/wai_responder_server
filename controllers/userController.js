@@ -323,28 +323,173 @@ const googleWebhook = async (req, res) => {
       return res.status(200).send("OK");
     }
 
-    // 1 (PURCHASED), 2 (RENEWED), 4 (RECOVERED) - активация/продление
-    if ([1, 2, 4].includes(Number(notificationType))) {
-      const newExpire = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      await user.update({ isPro: true, subscriptionExpires: newExpire });
-      log(
-        "RTDN-SUCCESS",
-        `Статус обновлен для ${user.deviceId}, тип: ${notificationType}`,
-        { newExpire }
-      );
-    }
-    // 3 (CANCELED), 12 (EXPIRED) - отключение
-    else if ([3, 12].includes(Number(notificationType))) {
-      await user.update({ isPro: false });
-      log("RTDN-CANCEL", `Подписка отключена для ${user.deviceId}`, {
-        notificationType,
-      });
-    } else {
-      log("RTDN-INFO", "Необработанный notificationType", {
-        notificationType,
-      });
+    const typeNum = Number(notificationType);
+    const CANCEL_LIMIT = 3; // 1-я и 2-я отмены ок, на 3-ю — бан FREE
+
+    switch (typeNum) {
+      // 1 (PURCHASED) - первая покупка подписки
+      case 1: {
+        const newExpire = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        await user.update({
+          isPro: true,
+          subscriptionExpires: newExpire,
+        });
+
+        log(
+          "RTDN-SUCCESS",
+          `SUBSCRIPTION PURCHASED для ${user.deviceId} (type=1)`,
+          { newExpire, purchaseToken }
+        );
+
+        // логируем событие покупки (по желанию)
+        await SubscriptionEvent.create({
+          userId: user.id,
+          deviceId: user.deviceId,
+          purchaseToken,
+          eventType: "RTDN_PURCHASED",
+          source: "googleWebhook",
+          notificationType: typeNum,
+          rawPayload: decoded,
+        });
+
+        break;
+      }
+
+      // 2 (RENEWED) - успешное продление подписки
+      case 2: {
+        const newExpire = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        await user.update({
+          isPro: true,
+          subscriptionExpires: newExpire,
+        });
+
+        log(
+          "RTDN-SUCCESS",
+          `SUBSCRIPTION RENEWED для ${user.deviceId} (type=2)`,
+          { newExpire, purchaseToken }
+        );
+
+        await SubscriptionEvent.create({
+          userId: user.id,
+          deviceId: user.deviceId,
+          purchaseToken,
+          eventType: "RTDN_RENEWED",
+          source: "googleWebhook",
+          notificationType: typeNum,
+          rawPayload: decoded,
+        });
+
+        break;
+      }
+
+      // 4 (RECOVERED) - подписка восстановлена после проблем с оплатой
+      case 4: {
+        const newExpire = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        await user.update({
+          isPro: true,
+          subscriptionExpires: newExpire,
+        });
+
+        log(
+          "RTDN-SUCCESS",
+          `SUBSCRIPTION RECOVERED для ${user.deviceId} (type=4)`,
+          { newExpire, purchaseToken }
+        );
+
+        await SubscriptionEvent.create({
+          userId: user.id,
+          deviceId: user.deviceId,
+          purchaseToken,
+          eventType: "RTDN_RECOVERED",
+          source: "googleWebhook",
+          notificationType: typeNum,
+          rawPayload: decoded,
+        });
+
+        break;
+      }
+
+      // 3 (CANCELED) - отменена
+      // 10 (PAUSED) - приостановлена (если включил в Play Console)
+      // 11 (PAUSE_SCHEDULE_CHANGED) - изменён график паузы/отмены
+      // 12 (EXPIRED) - окончательно истекла
+      case 3:
+      case 10:
+      case 11:
+      case 12: {
+        // 1. Выключаем PRO
+        await user.update({ isPro: false });
+
+        // 2. Логируем событие
+        await SubscriptionEvent.create({
+          userId: user.id,
+          deviceId: user.deviceId,
+          purchaseToken,
+          eventType: "RTDN_CANCEL_OR_EXPIRE",
+          source: "googleWebhook",
+          notificationType: typeNum,
+          rawPayload: decoded,
+        });
+
+        // 3. Считаем, сколько уже было "плохих" событий
+        const cancelCount = await SubscriptionEvent.count({
+          where: {
+            userId: user.id,
+            eventType: "RTDN_CANCEL_OR_EXPIRE",
+          },
+        });
+
+        // 4. Если это >= 3-я отмена/пауза/истечение — вырубаем FREE навсегда
+        if (cancelCount >= CANCEL_LIMIT && !user.disableFreeTier) {
+          await user.update({ disableFreeTier: true });
+
+          log(
+            "RTDN-ANTIFARM",
+            `FREE заблокирован навсегда для ${user.deviceId}. Кол-во отмен/пауз/истечений: ${cancelCount}`,
+            {
+              userId: user.id,
+              deviceId: user.deviceId,
+              cancelCount,
+              purchaseToken,
+            }
+          );
+        }
+
+        log(
+          "RTDN-CANCEL",
+          `SUBSCRIPTION DISABLED для ${user.deviceId} (type=${typeNum})`,
+          { purchaseToken, cancelCount }
+        );
+
+        break;
+      }
+
+      // Любые другие типы, которые пока явно не используешь
+      default: {
+        log("RTDN-INFO", "Необработанный notificationType", {
+          notificationType: typeNum,
+          purchaseToken,
+          deviceId: user.deviceId,
+        });
+
+        await SubscriptionEvent.create({
+          userId: user.id,
+          deviceId: user.deviceId,
+          purchaseToken,
+          eventType: "RTDN_UNKNOWN",
+          source: "googleWebhook",
+          notificationType: typeNum,
+          rawPayload: decoded,
+        });
+
+        break;
+      }
     }
 
+    // RTDN всегда ждёт 200, даже если логика внутри что-то сделала не так
     res.status(200).send("OK");
   } catch (err) {
     log("RTDN-ERROR", err.message);

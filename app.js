@@ -29,7 +29,7 @@ async function start() {
     console.log("✅ DB connection OK");
 
     console.log("⏳ Sync models (sequelize.sync)...");
-    await sequelize.sync({ alter: true }); // авто-создание/обновление таблиц
+    // await sequelize.sync({ alter: true }); // авто-создание/обновление таблиц
     console.log("✅ Models synced");
 
     app.listen(PORT, () => {
