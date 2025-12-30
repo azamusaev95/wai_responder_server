@@ -2,6 +2,8 @@ import axios from "axios";
 import User from "../models/User.js";
 import AiUsageStats from "../models/AiUsageStats.js";
 
+const MODEL = "gpt-5-mini";
+
 function clamp(v, lo, hi) {
   if (typeof v !== "number" || Number.isNaN(v)) return lo;
   return Math.max(lo, Math.min(hi, v));
@@ -50,7 +52,6 @@ const shouldResetMessages = (user) => {
 export async function aiReply(req, res) {
   try {
     const {
-      model = "gpt-5-mini",
       systemPrompt = "You are a helpful assistant.",
       message = "",
       contact = { name: "Client", isGroup: false },
@@ -102,7 +103,8 @@ SAFETY RULES:
 - Do NOT provide professional Legal, Financial, or Medical advice.
 - If the user asks about these topics, politely decline and recommend a specialist.
 - Prefer to answer only questions related to this business, products and catalog.
-- If required information is missing, politely say you don't know.`;
+- If required information is missing, politely say you don't know.
+- Reply in the same language as the user.`;
 
     // ===== IGNORE EMPTY INPUT =====
     if (!message || String(message).trim() === "") {
@@ -124,25 +126,19 @@ SAFETY RULES:
       userMessage.push(`Catalog (JSON): ${formatCatalog(catalog)}`);
     }
 
-    // ===== TOKEN PARAM COMPAT MODE =====
     const max = clamp(+maxTokens, 16, 1024);
-
-    const tokenParam = String(model).startsWith("gpt-4o")
-      ? { max_completion_tokens: max }
-      : { max_tokens: max };
 
     // ===== OPENAI REQUEST =====
     const resp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model,
+        model: MODEL,
         messages: [
           { role: "system", content: modifiedSystemPrompt },
           { role: "user", content: userMessage.join("\n") },
         ],
         temperature: clamp(+temperature, 0, 1),
-
-        ...tokenParam,
+        max_tokens: max,
       },
       {
         timeout: 15000,
@@ -160,7 +156,7 @@ SAFETY RULES:
     if (deviceId && usage?.total_tokens) {
       try {
         const now = new Date();
-        const monthKey = now.toISOString().slice(0, 7); // YYYY-MM
+        const monthKey = now.toISOString().slice(0, 7);
 
         const existing = await AiUsageStats.findOne({
           where: { deviceId, monthKey },
