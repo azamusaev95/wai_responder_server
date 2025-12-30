@@ -1,8 +1,6 @@
 import axios from "axios";
 import User from "../models/User.js";
 
-const OPENAI_MODEL = "gpt-5-mini";
-
 function clamp(v, lo, hi) {
   if (typeof v !== "number" || Number.isNaN(v)) return lo;
   return Math.max(lo, Math.min(hi, v));
@@ -48,12 +46,12 @@ const shouldResetMessages = (user) => {
 export async function aiReply(req, res) {
   try {
     const {
-      // model убрали, всегда используем OPENAI_MODEL (gpt-5-mini)
+      model = "gpt-4o",
       systemPrompt = "You are a helpful assistant.",
       message = "",
       contact = { name: "Client", isGroup: false },
       catalog = [],
-      temperature = 0.3, // оставляем в теле, но не передаём в OpenAI для gpt-5-mini
+      temperature = 0.3,
       maxTokens = 256,
       deviceId,
     } = req.body || {};
@@ -105,6 +103,7 @@ export async function aiReply(req, res) {
     }
 
     // ========== ПОДГОТОВКА СИСТЕМНОГО ПРОМПТА ==========
+    // Мягкие правила безопасности, без SILENCE
     const modifiedSystemPrompt = `${systemPrompt}
 
 SAFETY RULES:
@@ -125,22 +124,17 @@ SAFETY RULES:
       userMessage.push(`Catalog (JSON): ${formatCatalog(catalog)}`);
     }
 
-    console.log(
-      `🤖 Calling OpenAI with model: ${OPENAI_MODEL}, maxTokens: ${maxTokens}`
-    );
-
-    // ========== OPENAI REQUEST (GPT-5 MINI) ==========
+    // ========== OPENAI REQUEST ==========
     const resp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: OPENAI_MODEL,
+        model,
         messages: [
           { role: "system", content: modifiedSystemPrompt },
           { role: "user", content: userMessage.join("\n") },
         ],
-        // Для GPT-5 mini (reasoning-модель) используем max_completion_tokens
-        max_completion_tokens: clamp(+maxTokens, 16, 1024),
-        // temperature НЕ отправляем, чтобы избежать ошибок параметров
+        temperature: clamp(+temperature, 0, 1),
+        max_tokens: clamp(+maxTokens, 16, 1024),
       },
       {
         timeout: 15000,
@@ -173,7 +167,6 @@ SAFETY RULES:
   } catch (e) {
     const status = e?.response?.status || 500;
     const msg = e?.response?.data || { error: String(e?.message || e) };
-    console.error("❌ OpenAI / aiReply error:", msg);
     res.status(status).json({ error: msg });
   }
 }
