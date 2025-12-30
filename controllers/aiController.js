@@ -1,7 +1,7 @@
 import axios from "axios";
 import User from "../models/User.js";
 
-// 🔥 ЖЕСТКАЯ ПРИВЯЗКА МОДЕЛИ НА СЕРВЕРЕ
+// 🔥 ЖЕСТКАЯ ПРИВЯЗКА МОДЕЛИ
 const MODEL_NAME = "gpt-5-mini";
 
 function clamp(v, lo, hi) {
@@ -49,17 +49,15 @@ const shouldResetMessages = (user) => {
 export async function aiReply(req, res) {
   try {
     const {
-      // model убрали из чтения, используем константу MODEL_NAME
       systemPrompt = "You are a helpful assistant.",
       message = "",
       contact = { name: "Client", isGroup: false },
       catalog = [],
-      temperature = 0.3,
-      maxTokens = 256,
+      maxTokens = 256, // temperature удалили из деструктуризации, она не нужна
       deviceId,
     } = req.body || {};
 
-    // ========== ПРОВЕРКА ЛИМИТА (оставляем без изменений) ==========
+    // ========== ПРОВЕРКА ЛИМИТА ==========
     if (deviceId) {
       const user = await User.findOne({ where: { deviceId } });
 
@@ -137,15 +135,12 @@ SAFETY RULES:
           { role: "system", content: modifiedSystemPrompt },
           { role: "user", content: userMessage.join("\n") },
         ],
-        temperature: clamp(+temperature, 0, 1),
-
-        // 🔥 ИСПРАВЛЕНИЕ ЗДЕСЬ:
-        // Было: max_tokens
-        // Стало: max_completion_tokens
+        // ❌ УДАЛИЛИ temperature (модель требует дефолтное значение 1)
+        // ✅ ОСТАВИЛИ max_completion_tokens
         max_completion_tokens: clamp(+maxTokens, 16, 1024),
       },
       {
-        timeout: 15000,
+        timeout: 25000, // Увеличил таймаут до 25с, так как "умные" модели могут думать дольше
         headers: {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           "Content-Type": "application/json",
@@ -167,7 +162,6 @@ SAFETY RULES:
       }
     }
 
-    // Возвращаем ответ
     res.json({
       reply,
       silence: false,
@@ -175,7 +169,7 @@ SAFETY RULES:
   } catch (e) {
     const status = e?.response?.status || 500;
     const msg = e?.response?.data || { error: String(e?.message || e) };
-    console.error("[AI] Error:", JSON.stringify(msg, null, 2)); // Чуть улучшил лог ошибки
+    console.error("[AI] Error:", JSON.stringify(msg, null, 2));
     res.status(status).json({ error: msg });
   }
 }
