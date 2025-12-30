@@ -19,6 +19,7 @@ OBJECTIVES (What you need to find out):
 7. **Tone**: How should the AI speak? (Friendly, formal, funny, etc.)
 
 RULES:
+- **LANGUAGE RULE**: Do NOT ask which language the WhatsApp AI assistant should answer in. Always assume the assistant must reply in the same language that the user writes in WhatsApp chats.
 - **CONTEXT AWARENESS**: Analyze the user's answer to Objective 1 ("Business Core"). If they are a service provider (lawyer, doctor, etc.), DO NOT ask about delivery. Go straight to Operations.
 - Ask ONE question at a time.
 - Be friendly and professional.
@@ -68,10 +69,6 @@ TARGET LANGUAGE: ${lang} (The generated prompt must be in this language!)
    - "If you strictly DON'T know the answer based on these instructions, simply apologize and say you don't have that information right now."
    - "Respond in the same language as the user."
    - "Keep responses concise and mobile-friendly."
-   - "Do NOT instruct the user to contact a manager unless a specific support number is provided."
-
-
-
 
 **OUTPUT**:
 Return **ONLY** the text of the system prompt. No markdown, no intros.
@@ -152,6 +149,7 @@ export async function answerQuestion(req, res) {
       (m) => m.role === "user"
     ).length;
 
+    // Жёсткий предел вопросов (анти-залипание)
     if (questionCount >= 15) {
       return finishInterview(res, session, sessionId, questionCount);
     }
@@ -186,7 +184,8 @@ export async function answerQuestion(req, res) {
 
     if (
       aiResponse.isComplete ||
-      aiResponse.question.includes("INTERVIEW_COMPLETE")
+      (typeof aiResponse.question === "string" &&
+        aiResponse.question.includes("INTERVIEW_COMPLETE"))
     ) {
       return finishInterview(res, session, sessionId, questionCount);
     }
@@ -250,8 +249,8 @@ export async function generatePromptFromInterview(req, res) {
     }
 
     const lengthInstruction = isPro
-      ? "Make the prompt detailed and comprehensive (up to 1500 chars). Ensure the tone matches the owner's request."
-      : "STRICT LIMIT: Keep under 600 chars. Focus on the most important business details.";
+      ? "Make the prompt detailed and comprehensive (up to 1300 chars). Ensure the tone matches the owner's request. Avoid unnecessary repetition."
+      : "STRICT LIMIT: Keep under 900 chars. Focus on the most important business details. Remove any fluff or marketing-style repetition.";
 
     const transcript = session.messages
       .map((m) => `${m.role === "user" ? "Owner" : "AI"}: ${m.content}`)
@@ -300,6 +299,10 @@ export async function regeneratePrompt(req, res) {
     const session = interviewSessions.get(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
 
+    const transcript = session.messages
+      .map((m) => `${m.role === "user" ? "Owner" : "AI"}: ${m.content}`)
+      .join("\n\n");
+
     const response = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
@@ -311,10 +314,9 @@ export async function regeneratePrompt(req, res) {
               GET_PROMPT_GENERATOR_SYSTEM(session.language) +
               "\n\nIMPORTANT: Create a DIFFERENT version. Re-phrase the instructions.",
           },
-
           {
             role: "user",
-            content: `Based on the previous interview transcript.`,
+            content: `Based on the previous interview transcript:\n${transcript}`,
           },
         ],
       },
@@ -326,6 +328,7 @@ export async function regeneratePrompt(req, res) {
       prompt: response.data.choices[0].message.content.trim(),
     });
   } catch (e) {
+    console.error("[PROMPT_GEN] Regenerate error:", e);
     res.status(500).json({ error: "Failed to regenerate" });
   }
 }
