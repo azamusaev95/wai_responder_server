@@ -1,6 +1,8 @@
 import axios from "axios";
 import User from "../models/User.js";
 
+const MODEL = "gpt-5-mini"; // ✅ Правильная модель
+
 function clamp(v, lo, hi) {
   if (typeof v !== "number" || Number.isNaN(v)) return lo;
   return Math.max(lo, Math.min(hi, v));
@@ -20,14 +22,13 @@ function formatCatalog(items = []) {
   }
 }
 
-// Проверка активности подписки
+// ===== SUBSCRIPTION HELPERS =====
 const isSubscriptionActive = (user) => {
   if (!user.isPro) return false;
   if (!user.subscriptionExpires) return true;
   return new Date() < new Date(user.subscriptionExpires);
 };
 
-// Обновить статус подписки
 const updateUserStatus = async (user) => {
   if (!isSubscriptionActive(user) && user.isPro) {
     user.isPro = false;
@@ -36,32 +37,34 @@ const updateUserStatus = async (user) => {
   return user;
 };
 
-// Проверить нужно ли сбросить счётчик
 const shouldResetMessages = (user) => {
   if (!user.messagesResetDate) return false;
-  const now = new Date();
-  return now >= new Date(user.messagesResetDate);
+  return new Date() >= new Date(user.messagesResetDate);
 };
 
+// ======================================================
+// ===================== MAIN HANDLER ===================
+// ======================================================
 export async function aiReply(req, res) {
   try {
     const {
-      model = "gpt-4o",
       systemPrompt = "You are a helpful assistant.",
       message = "",
       contact = { name: "Client", isGroup: false },
       catalog = [],
       temperature = 0.3,
-      maxTokens = 256,
       deviceId,
     } = req.body || {};
 
-    // ========== ПРОВЕРКА ЛИМИТА ==========
+    let currentUser = null;
+
+    // ===== LIMIT CHECK =====
     if (deviceId) {
       const user = await User.findOne({ where: { deviceId } });
 
       if (user) {
         const updatedUser = await updateUserStatus(user);
+        currentUser = updatedUser;
 
         if (shouldResetMessages(updatedUser)) {
           const now = new Date();
@@ -70,49 +73,43 @@ export async function aiReply(req, res) {
             now.getTime() + 30 * 24 * 60 * 60 * 1000
           );
           await updatedUser.save();
-          console.log(`🔄 Message counter reset for device: ${deviceId}`);
         }
 
-        if (!updatedUser.isPro) {
-          const FREE_LIMIT = 50;
+        const FREE_LIMIT = 50;
 
-          if (updatedUser.messagesThisMonth >= FREE_LIMIT) {
-            console.log(
-              `❌ Message limit reached for device: ${deviceId} (${updatedUser.messagesThisMonth}/${FREE_LIMIT})`
-            );
-            return res.json({
-              limitReached: true,
-              reply: null,
-              limit: {
-                used: updatedUser.messagesThisMonth,
-                total: FREE_LIMIT,
-                isPro: false,
-              },
-            });
-          }
+        if (!updatedUser.isPro && updatedUser.messagesThisMonth >= FREE_LIMIT) {
+          return res.json({
+            limitReached: true,
+            reply: null,
+            limit: {
+              used: updatedUser.messagesThisMonth,
+              total: FREE_LIMIT,
+              isPro: false,
+            },
+          });
         }
-
-        console.log(
-          `✅ Message allowed for device: ${deviceId} (${
-            updatedUser.messagesThisMonth + 1
-          }/${updatedUser.isPro ? "∞" : "50"})`
-        );
-      } else {
-        console.warn(`⚠️ User not found for deviceId: ${deviceId}`);
       }
     }
 
-    // ========== ПОДГОТОВКА СИСТЕМНОГО ПРОМПТА ==========
-    // Мягкие правила безопасности, без SILENCE
+    // ===== SAFETY PROMPT =====
     const modifiedSystemPrompt = `${systemPrompt}
 
 SAFETY RULES:
 - Do NOT provide professional Legal, Financial, or Medical advice.
-- If the user asks about these topics, briefly say you are not allowed to advise and suggest contacting a specialist.
-- Prefer to answer only questions related to this specific business, its products, services and catalog.
-- If required information is missing, politely say you don't know or that the manager can clarify.`;
+- If the user asks about these topics, politely decline and recommend a specialist.
+- Prefer to answer only questions related to this business, products and catalog.
+- If required information is missing, politely say you don't know.
+- Reply in the same language as the user.`;
 
-    // ========== ПОДГОТОВКА СООБЩЕНИЯ ==========
+    // ===== IGNORE EMPTY INPUT =====
+    if (!message || String(message).trim() === "") {
+      return res.json({
+        reply: "",
+        silence: true,
+      });
+    }
+
+    // ===== PREPARE USER MESSAGE =====
     const userMessage = [
       `Contact: ${contact?.name ?? "Client"} (${
         contact?.isGroup ? "group" : "private"
@@ -124,17 +121,20 @@ SAFETY RULES:
       userMessage.push(`Catalog (JSON): ${formatCatalog(catalog)}`);
     }
 
-    // ========== OPENAI REQUEST ==========
+    // 🔥 ТОКЕНЫ ТОЛЬКО НА СЕРВЕРЕ!
+    const MAX_COMPLETION_TOKENS = 256;
+
+    // ===== OPENAI REQUEST =====
     const resp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model,
+        model: MODEL, // gpt-4o-mini
         messages: [
           { role: "system", content: modifiedSystemPrompt },
           { role: "user", content: userMessage.join("\n") },
         ],
         temperature: clamp(+temperature, 0, 1),
-        max_tokens: clamp(+maxTokens, 16, 1024),
+        max_completion_tokens: MAX_COMPLETION_TOKENS, // ✅ Правильный параметр
       },
       {
         timeout: 15000,
@@ -145,28 +145,31 @@ SAFETY RULES:
       }
     );
 
-    let reply = resp?.data?.choices?.[0]?.message?.content?.trim() || "";
+    const reply = resp?.data?.choices?.[0]?.message?.content?.trim() || "";
 
-    // ========== УВЕЛИЧИТЬ СЧЁТЧИК ==========
-    if (deviceId) {
-      const user = await User.findOne({ where: { deviceId } });
-      if (user) {
-        user.messagesThisMonth += 1;
-        await user.save();
-        console.log(
-          `📈 Message count increased: ${user.messagesThisMonth} for device: ${deviceId}`
+    // ===== INCREMENT USER MESSAGE COUNT =====
+    if (currentUser) {
+      try {
+        currentUser.messagesThisMonth += 1;
+        await currentUser.save();
+      } catch (counterErr) {
+        console.error(
+          "[AI_REPLY] Failed to increment messagesThisMonth:",
+          counterErr?.message || counterErr
         );
       }
     }
 
-    // Возвращаем ответ (без SILENCE-механики)
-    res.json({
+    return res.json({
       reply,
       silence: false,
     });
   } catch (e) {
+    console.error("OPENAI ERROR:", e?.response?.data || e?.message);
+
     const status = e?.response?.status || 500;
     const msg = e?.response?.data || { error: String(e?.message || e) };
+
     res.status(status).json({ error: msg });
   }
 }
