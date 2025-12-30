@@ -57,7 +57,7 @@ export async function aiReply(req, res) {
       contact = { name: "Client", isGroup: false },
       catalog = [],
       temperature = 0.3,
-      maxTokens = 256,
+      max_tokens = 256,
       deviceId,
     } = req.body || {};
 
@@ -126,7 +126,7 @@ SAFETY RULES:
       userMessage.push(`Catalog (JSON): ${formatCatalog(catalog)}`);
     }
 
-    const max = clamp(+maxTokens, 16, 1024);
+    const max = clamp(+max_tokens, 16, 1024);
 
     // ===== OPENAI REQUEST =====
     const resp = await axios.post(
