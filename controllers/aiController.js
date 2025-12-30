@@ -1,6 +1,9 @@
 import axios from "axios";
 import User from "../models/User.js";
 
+// 🔥 ЖЕСТКАЯ ПРИВЯЗКА МОДЕЛИ НА СЕРВЕРЕ
+const MODEL_NAME = "gpt-5-mini";
+
 function clamp(v, lo, hi) {
   if (typeof v !== "number" || Number.isNaN(v)) return lo;
   return Math.max(lo, Math.min(hi, v));
@@ -46,7 +49,7 @@ const shouldResetMessages = (user) => {
 export async function aiReply(req, res) {
   try {
     const {
-      model = "gpt-4o",
+      // model убрали из чтения, используем константу MODEL_NAME
       systemPrompt = "You are a helpful assistant.",
       message = "",
       contact = { name: "Client", isGroup: false },
@@ -103,7 +106,6 @@ export async function aiReply(req, res) {
     }
 
     // ========== ПОДГОТОВКА СИСТЕМНОГО ПРОМПТА ==========
-    // Мягкие правила безопасности, без SILENCE
     const modifiedSystemPrompt = `${systemPrompt}
 
 SAFETY RULES:
@@ -124,11 +126,13 @@ SAFETY RULES:
       userMessage.push(`Catalog (JSON): ${formatCatalog(catalog)}`);
     }
 
-    // ========== OPENAI REQUEST ==========
+    // ========== OPENAI REQUEST (GPT-5 MINI) ==========
+    console.log(`[AI] Requesting ${MODEL_NAME}...`);
+
     const resp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model,
+        model: MODEL_NAME, // <--- Используем жестко заданную модель
         messages: [
           { role: "system", content: modifiedSystemPrompt },
           { role: "user", content: userMessage.join("\n") },
@@ -159,7 +163,7 @@ SAFETY RULES:
       }
     }
 
-    // Возвращаем ответ (без SILENCE-механики)
+    // Возвращаем ответ
     res.json({
       reply,
       silence: false,
@@ -167,6 +171,7 @@ SAFETY RULES:
   } catch (e) {
     const status = e?.response?.status || 500;
     const msg = e?.response?.data || { error: String(e?.message || e) };
+    console.error("[AI] Error:", msg);
     res.status(status).json({ error: msg });
   }
 }
