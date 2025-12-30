@@ -59,7 +59,7 @@ export async function aiReply(req, res) {
       deviceId,
     } = req.body || {};
 
-    // ========== ПРОВЕРКА ЛИМИТА ==========
+    // ========== ПРОВЕРКА ЛИМИТА (оставляем без изменений) ==========
     if (deviceId) {
       const user = await User.findOne({ where: { deviceId } });
 
@@ -132,13 +132,17 @@ SAFETY RULES:
     const resp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: MODEL_NAME, // <--- Используем жестко заданную модель
+        model: MODEL_NAME,
         messages: [
           { role: "system", content: modifiedSystemPrompt },
           { role: "user", content: userMessage.join("\n") },
         ],
         temperature: clamp(+temperature, 0, 1),
-        max_tokens: clamp(+maxTokens, 16, 1024),
+
+        // 🔥 ИСПРАВЛЕНИЕ ЗДЕСЬ:
+        // Было: max_tokens
+        // Стало: max_completion_tokens
+        max_completion_tokens: clamp(+maxTokens, 16, 1024),
       },
       {
         timeout: 15000,
@@ -171,7 +175,7 @@ SAFETY RULES:
   } catch (e) {
     const status = e?.response?.status || 500;
     const msg = e?.response?.data || { error: String(e?.message || e) };
-    console.error("[AI] Error:", msg);
+    console.error("[AI] Error:", JSON.stringify(msg, null, 2)); // Чуть улучшил лог ошибки
     res.status(status).json({ error: msg });
   }
 }
