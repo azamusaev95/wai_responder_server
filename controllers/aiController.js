@@ -57,7 +57,6 @@ export async function aiReply(req, res) {
       contact = { name: "Client", isGroup: false },
       catalog = [],
       temperature = 0.3,
-      max_tokens = 256,
       deviceId,
     } = req.body || {};
 
@@ -126,8 +125,6 @@ SAFETY RULES:
       userMessage.push(`Catalog (JSON): ${formatCatalog(catalog)}`);
     }
 
-    const max = clamp(+max_tokens, 16, 1024);
-
     // ===== OPENAI REQUEST =====
     const resp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
@@ -138,7 +135,6 @@ SAFETY RULES:
           { role: "user", content: userMessage.join("\n") },
         ],
         temperature: clamp(+temperature, 0, 1),
-        max_tokens: max,
       },
       {
         timeout: 15000,
