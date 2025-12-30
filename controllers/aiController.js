@@ -50,9 +50,7 @@ const shouldResetMessages = (user) => {
 export async function aiReply(req, res) {
   try {
     const {
-      // 🚨 Фиксируем одну модель
       model = "gpt-5-mini",
-
       systemPrompt = "You are a helpful assistant.",
       message = "",
       contact = { name: "Client", isGroup: false },
@@ -75,8 +73,9 @@ export async function aiReply(req, res) {
         if (shouldResetMessages(updatedUser)) {
           const now = new Date();
           updatedUser.messagesThisMonth = 0;
-          updatedUser.messagesResetDate =
-            now.getTime() + 30 * 24 * 60 * 60 * 1000;
+          updatedUser.messagesResetDate = new Date(
+            now.getTime() + 30 * 24 * 60 * 60 * 1000
+          );
           await updatedUser.save();
         }
 
@@ -102,10 +101,10 @@ export async function aiReply(req, res) {
 SAFETY RULES:
 - Do NOT provide professional Legal, Financial, or Medical advice.
 - If the user asks about these topics, politely decline and recommend a specialist.
-- Answer only questions related to this business, products or catalog.
-- If information is missing — say you don't know.`;
+- Prefer to answer only questions related to this business, products and catalog.
+- If required information is missing, politely say you don't know.`;
 
-    // ===== IGNORE EMPTY INPUT (важно) =====
+    // ===== IGNORE EMPTY INPUT =====
     if (!message || String(message).trim() === "") {
       return res.json({
         reply: "",
@@ -113,31 +112,37 @@ SAFETY RULES:
       });
     }
 
-    // ===== BUILD MESSAGE =====
+    // ===== PREPARE USER MESSAGE =====
     const userMessage = [
       `Contact: ${contact?.name ?? "Client"} (${
         contact?.isGroup ? "group" : "private"
       })`,
-      `Message: "${String(message).slice(0, 2000)}"`,
+      `Message: "${String(message ?? "").slice(0, 2000)}"`,
     ];
 
     if (Array.isArray(catalog) && catalog.length > 0) {
       userMessage.push(`Catalog (JSON): ${formatCatalog(catalog)}`);
     }
 
+    // ===== TOKEN PARAM COMPAT MODE =====
+    const max = clamp(+maxTokens, 16, 1024);
+
+    const tokenParam = String(model).startsWith("gpt-4o")
+      ? { max_completion_tokens: max }
+      : { max_tokens: max };
+
     // ===== OPENAI REQUEST =====
     const resp = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-5-mini",
+        model,
         messages: [
           { role: "system", content: modifiedSystemPrompt },
           { role: "user", content: userMessage.join("\n") },
         ],
         temperature: clamp(+temperature, 0, 1),
 
-        // 👍 `gpt-5-mini` поддерживает max_tokens
-        max_tokens: clamp(+maxTokens, 16, 1024),
+        ...tokenParam,
       },
       {
         timeout: 15000,
@@ -153,33 +158,47 @@ SAFETY RULES:
 
     // ===== TOKEN LOGGING =====
     if (deviceId && usage?.total_tokens) {
-      const now = new Date();
-      const monthKey = now.toISOString().slice(0, 7);
+      try {
+        const now = new Date();
+        const monthKey = now.toISOString().slice(0, 7); // YYYY-MM
 
-      const row = await AiUsageStats.findOne({
-        where: { deviceId, monthKey },
-      });
-
-      if (row) {
-        row.totalTokens += usage.total_tokens;
-        row.repliesCount += 1;
-        row.lastReplyAt = now;
-        await row.save();
-      } else {
-        await AiUsageStats.create({
-          deviceId,
-          monthKey,
-          totalTokens: usage.total_tokens,
-          repliesCount: 1,
-          lastReplyAt: now,
+        const existing = await AiUsageStats.findOne({
+          where: { deviceId, monthKey },
         });
+
+        if (existing) {
+          existing.totalTokens += usage.total_tokens;
+          existing.repliesCount += 1;
+          existing.lastReplyAt = now;
+          await existing.save();
+        } else {
+          await AiUsageStats.create({
+            deviceId,
+            monthKey,
+            totalTokens: usage.total_tokens,
+            repliesCount: 1,
+            lastReplyAt: now,
+          });
+        }
+      } catch (logErr) {
+        console.error(
+          "[AI_USAGE] Failed to update ai_usage_stats:",
+          logErr?.message || logErr
+        );
       }
     }
 
-    // ===== INCREMENT MESSAGE COUNT =====
+    // ===== INCREMENT USER MESSAGE COUNT =====
     if (currentUser) {
-      currentUser.messagesThisMonth += 1;
-      await currentUser.save();
+      try {
+        currentUser.messagesThisMonth += 1;
+        await currentUser.save();
+      } catch (counterErr) {
+        console.error(
+          "[AI_REPLY] Failed to increment messagesThisMonth:",
+          counterErr?.message || counterErr
+        );
+      }
     }
 
     return res.json({
@@ -190,8 +209,8 @@ SAFETY RULES:
     console.error("OPENAI ERROR:", e?.response?.data || e?.message);
 
     const status = e?.response?.status || 500;
-    res.status(status).json({
-      error: e?.response?.data || String(e),
-    });
+    const msg = e?.response?.data || { error: String(e?.message || e) };
+
+    res.status(status).json({ error: msg });
   }
 }
