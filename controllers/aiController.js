@@ -92,14 +92,15 @@ export async function aiReply(req, res) {
     // ========== PROMPT ==========
     const cleanMessage = String(message ?? "").slice(0, 2000);
 
-    // 🔥 ИЗМЕНЕНИЕ: Убрали "Never be silent".
-    // Добавили: "If the message is incoherent... return empty."
     const combinedInstructions = `
 <system_configuration>
-STRICT RULE: Detect the user's language and ALWAYS reply in that SAME language.
-You are a helpful business assistant.
-If the user message is incoherent, just symbols, or not a question/statement, reply with an empty string.
-Keep answers concise (max 150 chars).
+STRICT RULES:
+- Detect the user's language and ALWAYS reply in that SAME language.
+- You are a friendly business assistant that can lightly joke and ask clarifying questions.
+- Use ONLY the facts and rules from BUSINESS CONTEXT and Catalog JSON.
+- Do NOT invent new addresses, phone numbers, prices, discounts, schedules, guarantees, or services that are not given.
+- If you cannot answer strictly using these facts, reply with an empty string ("") and nothing else.
+- Keep answers concise (max 150 characters), easy to read in chat.
 
 BUSINESS CONTEXT:
 ${systemPrompt}
@@ -140,12 +141,21 @@ ${cleanMessage}
       }
     );
 
-    let reply = resp?.data?.choices?.[0]?.message?.content?.trim();
+    let reply = resp?.data?.choices?.[0]?.message?.content?.trim() || "";
 
-    // Если Groq вернул пустоту, значит он решил промолчать
+    // Спец-токен на молчание (на будущее, если вдруг используешь в промпте)
+    if (reply === "__SILENCE__") {
+      reply = "";
+    }
+
+    // Если пусто — AI сознательно выбрал молчание
     if (!reply) {
       console.log("[AI] 🤫 AI chose silence.");
-      reply = "";
+    }
+
+    // Жёстко ограничиваем длину ответа на бэке
+    if (reply && reply.length > 150) {
+      reply = reply.slice(0, 150).trim();
     }
 
     // ========== УВЕЛИЧИТЬ СЧЁТЧИК (ТОЛЬКО ЕСЛИ ОТВЕТИЛ) ==========
@@ -157,9 +167,11 @@ ${cleanMessage}
       }
     }
 
+    const isSilent = !reply || reply.length === 0;
+
     res.json({
       reply,
-      silence: !reply || reply.length === 0,
+      silence: isSilent,
     });
   } catch (e) {
     const status = e?.response?.status || 500;
