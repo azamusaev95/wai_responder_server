@@ -1,4 +1,5 @@
 import axios from "axios";
+
 import User from "../models/User.js";
 
 // ✅ Llama 3.3 70B (Самая умная на Groq)
@@ -42,7 +43,7 @@ const shouldResetMessages = (user) => {
 export async function aiReply(req, res) {
   try {
     const {
-      systemPrompt = "", // Твои данные о бизнесе
+      systemPrompt = "", // Может быть: текст из Home ИЛИ служебный промпт ("Return ONLY JSON ...")
       message = "",
       contact = { name: "Client", isGroup: false },
       catalog = [],
@@ -57,7 +58,7 @@ export async function aiReply(req, res) {
     console.log(`📏 Prompt Length: ${systemPrompt.length} chars`);
     console.log("📜 ACTUAL PROMPT RECEIVED:");
     console.log("-----------------------------------------------");
-    console.log(systemPrompt); // <-- ВЕСЬ ЛИ ТУТ ТЕКСТ? ИЛИ ОН ОБРЕЗАН?
+    console.log(systemPrompt); // <-- ДОЛЖЕН ПРИХОДИТЬ ИЗ HOME БЕЗ ИЗМЕНЕНИЙ
     console.log("-----------------------------------------------");
     console.log("================ [DEBUG END] ==================\n");
     // =========================================================
@@ -96,28 +97,51 @@ export async function aiReply(req, res) {
         ? formatCatalog(catalog)
         : "Empty";
 
-    // ========== ФОРМИРОВАНИЕ ПРОМПТА ==========
-    // Мы убрали "Strict Rules" и просто даем данные как факты.
-    const combinedInstructions = `
-You are a helpful business assistant.
-Your goal is to answer client questions using ONLY the information provided below.
+    // ========== ОПРЕДЕЛЯЕМ РЕЖИМ: JSON или ДИАЛОГ С КЛИЕНТОМ ==========
+    const rawSystemPrompt = String(systemPrompt || "");
+    const isJsonMode = rawSystemPrompt
+      .trim()
+      .toLowerCase()
+      .startsWith("return only json");
 
---- 🏢 BUSINESS INFORMATION ---
-${systemPrompt}
+    let combinedInstructions;
+
+    if (isJsonMode) {
+      // 🔹 Режим классификации / служебный: НЕ добавляем правила молчания,
+      // НЕ вмешиваемся — просто помогаем вернуть JSON.
+      combinedInstructions = `
+${rawSystemPrompt}
+
+User message: "${cleanMessage}"
+      `.trim();
+    } else {
+      // 🔹 Обычный клиентский режим: промпт из Home — главный, добавляем
+      // короткие правила про __SILENCE__ и учитываем History/Current.
+      const safetyNote = `
+IMPORTANT:
+The main prompt above has the highest priority — follow it first.
+If the topic is legal, financial, medical, family/personal, or the information is missing, return "__SILENCE__".
+
+      `.trim();
+
+      combinedInstructions = `
+${rawSystemPrompt}
+
+${safetyNote}
+
+--- INSTRUCTIONS ---
+- Always reply in the same language as the client’s last message.
+- Use only the main prompt, catalog, and chat history.
+- History is context — answer only to “Current”.
+- Keep answers brief (max 2 sentences).
 
 --- 📦 PRODUCTS / SERVICES ---
 ${catalogJson}
 
---- 📝 INSTRUCTIONS ---
-1. **Language:** Detect the user's language (Russian, Kyrgyz, etc.) and reply in the SAME language.
-2. **Context:** Use the "BUSINESS INFORMATION" above to answer.
-3. **Missing Info:** If the answer is not in the text above, say "I don't have that information".
-4. **Brevity:** Keep answers short (max 2 sentences).
-
---- 👤 CLIENT MESSAGE ---
-Client: ${contact?.name ?? "Client"}
-Message: "${cleanMessage}"
-    `.trim();
+--- 💬 CHAT HISTORY & CURRENT MESSAGE ---
+${cleanMessage}
+      `.trim();
+    }
 
     // ========== ЗАПРОС К GROQ ==========
     console.log(`[AI] Sending to Groq (${MODEL_NAME})...`);
@@ -141,6 +165,7 @@ Message: "${cleanMessage}"
 
     let reply = resp?.data?.choices?.[0]?.message?.content?.trim() || "";
 
+    // Если модель решила "молчать" через __SILENCE__ — не отправляем текст
     if (reply === "__SILENCE__") reply = "";
 
     // Жёстко ограничиваем длину ответа
