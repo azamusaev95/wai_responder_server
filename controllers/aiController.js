@@ -1,7 +1,7 @@
 import axios from "axios";
 import User from "../models/User.js";
 
-// ✅ НАСТРОЙКИ GROQ (Llama 3.3)
+// ✅ 1. Используем Llama 3.3 на Groq
 const MODEL_NAME = "llama-3.3-70b-versatile";
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
@@ -25,64 +25,90 @@ const isSubscriptionActive = (user) => {
   return new Date() < new Date(user.subscriptionExpires);
 };
 
+const updateUserStatus = async (user) => {
+  if (!isSubscriptionActive(user) && user.isPro) {
+    user.isPro = false;
+    await user.save();
+  }
+  return user;
+};
+
+const shouldResetMessages = (user) => {
+  if (!user.messagesResetDate) return false;
+  const now = new Date();
+  return now >= new Date(user.messagesResetDate);
+};
+
 export async function aiReply(req, res) {
   try {
     const {
-      systemPrompt = "",
+      systemPrompt = "You are a helpful assistant.",
       message = "",
-      contact = { name: "Client" },
+      contact = { name: "Client", isGroup: false },
       catalog = [],
       deviceId,
     } = req.body || {};
 
-    // 1. ПРОВЕРКА ЛИМИТОВ ПОЛЬЗОВАТЕЛЯ
+    // ========== ПРОВЕРКА ЛИМИТА ==========
     if (deviceId) {
       const user = await User.findOne({ where: { deviceId } });
 
       if (user) {
-        // Проверка истечения подписки
-        if (!isSubscriptionActive(user) && user.isPro) {
-          user.isPro = false;
-          await user.save();
-        }
+        const updatedUser = await updateUserStatus(user);
 
-        // Сброс счетчика сообщений (раз в месяц)
-        if (
-          user.messagesResetDate &&
-          new Date() >= new Date(user.messagesResetDate)
-        ) {
-          user.messagesThisMonth = 0;
-          user.messagesResetDate = new Date(
-            Date.now() + 30 * 24 * 60 * 60 * 1000
+        // Сброс счетчика раз в месяц
+        if (shouldResetMessages(updatedUser)) {
+          const now = new Date();
+          updatedUser.messagesThisMonth = 0;
+          updatedUser.messagesResetDate = new Date(
+            now.getTime() + 30 * 24 * 60 * 60 * 1000
           );
-          await user.save();
+          await updatedUser.save();
           console.log(`🔄 Message counter reset for device: ${deviceId}`);
         }
 
         // Лимит 50 сообщений для FREE
-        if (!user.isPro && user.messagesThisMonth >= 50) {
-          console.log(`❌ Limit reached: ${deviceId}`);
-          return res.json({ limitReached: true, reply: null });
+        if (!updatedUser.isPro) {
+          const FREE_LIMIT = 50;
+          if (updatedUser.messagesThisMonth >= FREE_LIMIT) {
+            console.log(
+              `❌ Message limit reached: ${deviceId} (${updatedUser.messagesThisMonth})`
+            );
+            return res.json({
+              limitReached: true,
+              reply: null,
+              limit: {
+                used: updatedUser.messagesThisMonth,
+                total: FREE_LIMIT,
+                isPro: false,
+              },
+            });
+          }
         }
+        console.log(`✅ Allowed: ${deviceId}`);
       }
     }
 
+    // ========== PROMPT ==========
     const cleanMessage = String(message ?? "").slice(0, 2000);
 
-    // 2. СИСТЕМНЫЙ ПРОМПТ (Язык + Активность)
+    // 🔥 ИЗМЕНЕНИЕ: Убрали "Never be silent".
+    // Добавили: "If the message is incoherent... return empty."
     const combinedInstructions = `
 <system_configuration>
 STRICT RULE: Detect the user's language and ALWAYS reply in that SAME language.
-You are a proactive business assistant. Never be silent.
-Answer clearly and concisely (max 150 chars).
+You are a helpful business assistant.
+If the user message is incoherent, just symbols, or not a question/statement, reply with an empty string.
+Keep answers concise (max 150 chars).
 
 BUSINESS CONTEXT:
 ${systemPrompt}
 </system_configuration>
 
 <context_data>
-Contact: ${contact?.name ?? "Client"}
-Catalog: ${
+Contact Name: ${contact?.name ?? "Client"}
+Is Group Chat: ${contact?.isGroup ? "Yes" : "No"}
+Catalog JSON: ${
       Array.isArray(catalog) && catalog.length > 0
         ? formatCatalog(catalog)
         : "Empty"
@@ -92,16 +118,18 @@ Catalog: ${
 <user_input>
 ${cleanMessage}
 </user_input>
-`.trim();
+    `.trim();
 
-    // 3. ЗАПРОС К GROQ
+    // ========== GROQ REQUEST ==========
+    console.log(`[AI] Requesting Groq: ${MODEL_NAME}...`);
+
     const resp = await axios.post(
       GROQ_API_URL,
       {
         model: MODEL_NAME,
         messages: [{ role: "user", content: combinedInstructions }],
         max_tokens: 1024,
-        temperature: 0.6, // Баланс между креативностью и строгостью языка
+        temperature: 0.6,
       },
       {
         timeout: 30000,
@@ -112,10 +140,16 @@ ${cleanMessage}
       }
     );
 
-    let reply = resp?.data?.choices?.[0]?.message?.content?.trim() || "";
+    let reply = resp?.data?.choices?.[0]?.message?.content?.trim();
 
-    // 4. ОБНОВЛЕНИЕ СЧЕТЧИКА
-    if (deviceId && reply) {
+    // Если Groq вернул пустоту, значит он решил промолчать
+    if (!reply) {
+      console.log("[AI] 🤫 AI chose silence.");
+      reply = "";
+    }
+
+    // ========== УВЕЛИЧИТЬ СЧЁТЧИК (ТОЛЬКО ЕСЛИ ОТВЕТИЛ) ==========
+    if (deviceId && reply && reply.length > 0) {
       const user = await User.findOne({ where: { deviceId } });
       if (user) {
         user.messagesThisMonth += 1;
@@ -125,11 +159,12 @@ ${cleanMessage}
 
     res.json({
       reply,
-      silence: false, // Мы принудительно говорим "не молчать"
+      silence: !reply || reply.length === 0,
     });
   } catch (e) {
-    const errorMsg = e?.response?.data || e.message;
-    console.error("[AI] Error:", JSON.stringify(errorMsg, null, 2));
-    res.status(500).json({ error: errorMsg });
+    const status = e?.response?.status || 500;
+    const msg = e?.response?.data || { error: String(e?.message || e) };
+    console.error("[AI] Groq Error:", JSON.stringify(msg, null, 2));
+    res.status(status).json({ error: msg });
   }
 }
