@@ -129,7 +129,7 @@ ${cleanMessage}
         model: MODEL_NAME,
         messages: [{ role: "user", content: combinedInstructions }],
         max_tokens: 1024,
-        temperature: 0.6,
+        temperature: 0.1,
       },
       {
         timeout: 30000,
