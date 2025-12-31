@@ -6,7 +6,7 @@ import { FIRST_QUESTIONS } from "../constants/firstQuestions.js";
 const MODEL_NAME = "llama-3.3-70b-versatile";
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-// --- HELPER: Extract JSON from Llama response ---
+// --- HELPER: Extract JSON ---
 function extractJson(text) {
   try {
     const start = text.indexOf("{");
@@ -14,70 +14,79 @@ function extractJson(text) {
     if (start !== -1 && end !== -1) {
       return JSON.parse(text.substring(start, end + 1));
     }
-    return JSON.parse(text); // Try parsing directly if no braces found
+    return JSON.parse(text);
   } catch (e) {
     return null;
   }
 }
 
-// --- 1. PROMPT FOR AI INTERVIEWER ---
+// --- 1. 🔥 ЖИВОЙ ИНТЕРВЬЮЕР (Friendly & Engaging) ---
 const GET_AI_INTERVIEWER_PROMPT = (lang) => `
-You are an expert business analyst.
-Your task is to conduct a structured interview to build an AI chatbot for a business.
+You are a **Friendly and Enthusiastic AI Onboarding Specialist**.
+Your goal is to help a business owner set up their AI chatbot by asking simple questions.
 
-CURRENT LANGUAGE: ${lang} (You must conduct the interview in this language!)
+CURRENT LANGUAGE: ${lang} (MUST conduct the interview in this language!)
 
-OBJECTIVES:
-1. **Business Core**: What do they do? (Shop, Dentist, Lawyer, etc.)
-2. **Unique Value**: Why choose them?
-3. **Logistics**: Delivery areas/costs (SKIP for services).
-4. **Operations**: Address, Hours.
-5. **Payment**: Methods and specific details.
-6. **Contacts**: Phone, Socials.
-7. **Tone**: Friendly, formal, etc.
+**YOUR PERSONALITY:**
+- **Warm & Encouraging**: Use emojis (✨, 🚀, 👍, 📍). Be polite and supportive.
+- **Conversational**: Don't just ask dry questions. Briefly acknowledge their previous answer before asking the next one.
+  - *Bad*: "What is your address?"
+  - *Good*: "Got it! That sounds great. 👍 Now, where is your business located? 📍"
 
-RULES:
-- Ask ONE question at a time.
-- If they are a service, DO NOT ask about delivery.
-- If you have enough info, return "INTERVIEW_COMPLETE".
+**OBJECTIVES (Collect this info):**
+1. **Business Core**: What do they do? (Shop, Cafe, Service?)
+2. **Unique Value**: Why are they special?
+3. **Logistics**: Delivery? (SKIP if it's a Service/Doctor/Lawyer).
+4. **Operations**: Address & Hours.
+5. **Payment**: Methods (Cards, Cash, Bank info).
+6. **Contacts**: Phone, Insta, Website.
+7. **Tone**: How should the bot speak? (Formal, Funny, Friendly?)
 
-RESPONSE FORMAT:
-You must return ONLY a JSON object. Do not write anything else.
+**RULES:**
+- Ask **ONE** question at a time.
+- If they answer multiple things at once, tick those boxes off your list and move to the next missing item.
+- If you have enough info, return "isComplete": true.
+
+**RESPONSE FORMAT (CRITICAL):**
+You must return ONLY a JSON object. The "question" field must contain your friendly message.
 {
-  "question": "Your next question here in ${lang}",
+  "question": "Your friendly, emoji-rich question here...",
   "isComplete": false
 }
-
-If the interview is finished, set "isComplete": true.
 `;
 
-// --- 2. PROMPT FOR GENERATOR ---
+// --- 2. 🔥 МОЩНЫЙ ГЕНЕРАТОР (Rich & Sales-Oriented) ---
 const GET_PROMPT_GENERATOR_SYSTEM = (lang) => `
-You are an expert AI Prompt Engineer.
-Write a SYSTEM PROMPT for a WhatsApp AI Assistant based on the interview transcript.
+You are an **Elite AI Persona Architect & Copywriter**.
+Transform interview facts into a **highly engaging, soulful, and sales-oriented** System Prompt.
 
 TARGET LANGUAGE: ${lang}
 
-STRUCTURE:
-1. **Role**: Define who the AI is.
-2. **Business Context**: Summary.
-3. **Knowledge Base**: Services, Address, Contacts, Payment.
-4. **Behavior**: "If asked about X, say Y".
+**YOUR MISSION:**
+Create a system instruction that makes the AI sound like a **top-tier human employee**. It must be "saturated" (rich), persuasive, and helpful.
 
-OUTPUT:
-Return ONLY the raw text of the system prompt. No introduction.
+**STRUCTURE OF THE RESULTING PROMPT:**
+1.  **👑 Identity**: Give the AI a specific role (e.g., "Caring Concierge"). Define a warm tone.
+2.  **💎 The "Brain"**: Seamlessly integrate services & Unique Value.
+3.  **🚀 Behavior**:
+    * **Proactive Selling**: Suggest bookings/orders.
+    * **Objection Handling**: Reassure doubts.
+    * **Conciseness**: Short, punchy WhatsApp replies.
+4.  **🛡️ Guardrails**: How to handle unknown prices or off-topic questions.
+
+**OUTPUT:**
+Return ONLY the RAW SYSTEM PROMPT TEXT. No markdown code blocks, no intros.
+Make it **RICH**, **DETAILED**, and **ALIVE**.
 `;
 
 // --- SESSION STORAGE ---
 const interviewSessions = new Map();
 
-// Cleanup old sessions
 setInterval(() => {
   const now = Date.now();
   for (const [sessionId, session] of interviewSessions.entries()) {
-    if (now - session.timestamp > 2 * 60 * 60 * 1000) {
+    if (now - session.timestamp > 2 * 60 * 60 * 1000)
       interviewSessions.delete(sessionId);
-    }
   }
 }, 15 * 60 * 1000);
 
@@ -85,14 +94,11 @@ setInterval(() => {
 // API HANDLERS
 // ==========================================
 
-// 1. START INTERVIEW
+// 1. START
 export async function startInterview(req, res) {
   try {
     const { deviceId, language = "en" } = req.body;
-
-    if (!deviceId) {
-      return res.status(400).json({ error: "deviceId is required" });
-    }
+    if (!deviceId) return res.status(400).json({ error: "deviceId required" });
 
     const sessionId = `${deviceId}_${Date.now()}`;
     const firstQuestion = FIRST_QUESTIONS[language] || FIRST_QUESTIONS["en"];
@@ -112,38 +118,26 @@ export async function startInterview(req, res) {
       isComplete: false,
     });
   } catch (e) {
-    console.error("[INTERVIEW] Start error:", e);
     res.status(500).json({ error: "Internal server error" });
   }
 }
 
-// 2. ANSWER QUESTION
+// 2. ANSWER
 export async function answerQuestion(req, res) {
   try {
     const { sessionId, answer } = req.body;
-
-    if (!sessionId || !answer) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
+    if (!sessionId || !answer)
+      return res.status(400).json({ error: "Missing fields" });
 
     const session = interviewSessions.get(sessionId);
-    if (!session) {
-      return res.status(404).json({ error: "Session not found or expired" });
-    }
+    if (!session) return res.status(404).json({ error: "Session not found" });
 
     session.messages.push({ role: "user", content: answer });
     session.timestamp = Date.now();
+    const count = session.messages.filter((m) => m.role === "user").length;
 
-    const questionCount = session.messages.filter(
-      (m) => m.role === "user"
-    ).length;
+    if (count >= 15) return finishInterview(res, session, sessionId, count);
 
-    // Hard limit to prevent loops
-    if (questionCount >= 15) {
-      return finishInterview(res, session, sessionId, questionCount);
-    }
-
-    // Call Groq Llama 3.3
     const response = await axios.post(
       GROQ_API_URL,
       {
@@ -155,59 +149,47 @@ export async function answerQuestion(req, res) {
           },
           ...session.messages,
         ],
-        temperature: 0.6,
+        temperature: 0.7, // Чуть выше для "живости" диалога
         max_tokens: 512,
-        response_format: { type: "json_object" }, // Llama supports JSON mode
+        response_format: { type: "json_object" },
       },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-      }
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
 
     const content = response.data.choices[0].message.content;
     let aiResponse = extractJson(content);
-
-    // Fallback if JSON parsing fails
-    if (!aiResponse) {
-      aiResponse = { question: content, isComplete: false };
-    }
+    if (!aiResponse) aiResponse = { question: content, isComplete: false };
 
     if (
       aiResponse.isComplete ||
       (typeof aiResponse.question === "string" &&
         aiResponse.question.includes("INTERVIEW_COMPLETE"))
     ) {
-      return finishInterview(res, session, sessionId, questionCount);
+      return finishInterview(res, session, sessionId, count);
     }
 
     session.messages.push({ role: "assistant", content: aiResponse.question });
-
     res.json({
       success: true,
       sessionId,
       question: aiResponse.question,
-      questionNumber: questionCount + 1,
+      questionNumber: count + 1,
       isComplete: false,
     });
   } catch (e) {
-    console.error("[INTERVIEW] Answer error:", e?.response?.data || e.message);
-    res.status(500).json({ error: "Failed to get next question" });
+    console.error("[INTERVIEW] Error:", e.message);
+    res.status(500).json({ error: "Failed to get question" });
   }
 }
 
-// Helper to finish
 function finishInterview(res, session, sessionId, count) {
   const finalPhrases = {
-    ru: "Отлично! Я собрал всю информацию. Генерирую идеальный промпт... ✨",
-    en: "Great! I've gathered all the info. Generating your perfect prompt... ✨",
-    tr: "Harika! Tüm bilgileri topladım. Mükemmel istemi oluşturuyorum... ✨",
-    ky: "Азаматсыз! Бардык маалыматты чогулттум. Идеалдуу промпт түзүп жатам... ✨",
-    uz: "Ajoyib! Barcha ma'lumotlarni to'pladim. Ideal prompt yaratyapman... ✨",
+    ru: "Супер! ✨ Я узнал всё, что нужно. Сейчас создам идеального ассистента... 🤖",
+    en: "Awesome! ✨ I have everything I need. Creating your perfect assistant now... 🤖",
+    tr: "Harika! ✨ Gerekli her şeyi öğrendim. Asistanınızı oluşturuyorum... 🤖",
   };
-
   const finalMsg = finalPhrases[session.language] || finalPhrases["en"];
   session.messages.push({ role: "assistant", content: finalMsg });
-
   return res.json({
     success: true,
     sessionId,
@@ -222,10 +204,7 @@ export async function generatePromptFromInterview(req, res) {
   try {
     const { sessionId } = req.body;
     const session = interviewSessions.get(sessionId);
-
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
-    }
+    if (!session) return res.status(404).json({ error: "Session not found" });
 
     let isPro = false;
     try {
@@ -233,13 +212,11 @@ export async function generatePromptFromInterview(req, res) {
         where: { deviceId: session.deviceId },
       });
       if (user && user.isPro) isPro = true;
-    } catch (e) {
-      console.error("User check error", e);
-    }
+    } catch (e) {}
 
-    const lengthInstruction = isPro
-      ? "Make the prompt detailed and comprehensive (up to 1300 chars)."
-      : "STRICT LIMIT: Keep under 900 chars. Focus on essentials.";
+    const styleInstruction = isPro
+      ? "MODE: PREMIUM. Create a highly detailed, persuasive, and psychologically advanced persona. Use rich formatting. Length: up to 1500 chars."
+      : "MODE: STANDARD. Create a clear, professional, and helpful persona. Be concise but engaging. Length: up to 900 chars.";
 
     const transcript = session.messages
       .map((m) => `${m.role === "user" ? "Owner" : "AI"}: ${m.content}`)
@@ -254,32 +231,28 @@ export async function generatePromptFromInterview(req, res) {
             role: "system",
             content: GET_PROMPT_GENERATOR_SYSTEM(session.language),
           },
-          { role: "system", content: lengthInstruction },
-          { role: "user", content: `Interview Transcript:\n${transcript}` },
+          { role: "system", content: styleInstruction },
+          { role: "user", content: `TRANSCRIPT:\n${transcript}` },
         ],
-        temperature: 0.7,
-        max_tokens: 1500,
+        temperature: 0.75,
+        max_tokens: 1800,
       },
-      {
-        headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-      }
+      { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
-
-    const generatedPrompt = response.data.choices[0].message.content.trim();
 
     res.json({
       success: true,
-      prompt: generatedPrompt,
+      prompt: response.data.choices[0].message.content.trim(),
       sessionId,
       isPro,
     });
   } catch (e) {
-    console.error("[PROMPT_GEN] Error:", e?.response?.data || e.message);
+    console.error("[PROMPT_GEN] Error:", e.message);
     res.status(500).json({ error: "Generation failed" });
   }
 }
 
-// 4. REGENERATE PROMPT
+// 4. REGENERATE
 export async function regeneratePrompt(req, res) {
   try {
     const { sessionId } = req.body;
@@ -299,12 +272,12 @@ export async function regeneratePrompt(req, res) {
             role: "system",
             content:
               GET_PROMPT_GENERATOR_SYSTEM(session.language) +
-              "\n\nIMPORTANT: Create a DIFFERENT version. Re-phrase instructions.",
+              "\n\nIMPORTANT: Try a DIFFERENT style. Make it more creative and engaging.",
           },
-          { role: "user", content: `Transcript:\n${transcript}` },
+          { role: "user", content: `TRANSCRIPT:\n${transcript}` },
         ],
-        temperature: 0.8, // Higher temp for variety
-        max_tokens: 1500,
+        temperature: 0.85,
+        max_tokens: 1800,
       },
       { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } }
     );
@@ -314,16 +287,14 @@ export async function regeneratePrompt(req, res) {
       prompt: response.data.choices[0].message.content.trim(),
     });
   } catch (e) {
-    console.error("[PROMPT_GEN] Regen error:", e?.message);
+    console.error("[PROMPT_GEN] Regen error:", e.message);
     res.status(500).json({ error: "Failed to regenerate" });
   }
 }
 
-// 5. CANCEL INTERVIEW
+// 5. CANCEL
 export async function cancelInterview(req, res) {
   const { sessionId } = req.body;
-  if (sessionId && interviewSessions.has(sessionId)) {
-    interviewSessions.delete(sessionId);
-  }
+  if (sessionId) interviewSessions.delete(sessionId);
   res.json({ success: true });
 }
