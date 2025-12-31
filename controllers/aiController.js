@@ -8,8 +8,7 @@ import User from "../models/User.js";
 // ✅ ИСПОЛЬЗУЕМ Gemini 2.0 Flash
 // Самая новая, быстрая и дешевая модель на данный момент.
 // ID может быть 'gemini-2.0-flash-exp' или 'gemini-2.0-flash' (проверь в доках точный ID)
-const MODEL_NAME = "gemini-2.0-flash-exp";
-
+const MODEL_NAME = "gemini-1.5-flash";
 // Инициализация
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
