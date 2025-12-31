@@ -1,16 +1,9 @@
-import {
-  GoogleGenerativeAI,
-  HarmCategory,
-  HarmBlockThreshold,
-} from "@google/generative-ai";
+import axios from "axios";
 import User from "../models/User.js";
 
-// ✅ ИСПОЛЬЗУЕМ Gemini 2.0 Flash
-// Самая новая, быстрая и дешевая модель на данный момент.
-// ID может быть 'gemini-2.0-flash-exp' или 'gemini-2.0-flash' (проверь в доках точный ID)
-const MODEL_NAME = "gemini-1.5-flash";
-// Инициализация
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// ✅ 1. Используем Llama 3.3 на Groq
+const MODEL_NAME = "openai/gpt-oss-120b";
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 function formatCatalog(items = []) {
   try {
@@ -26,12 +19,14 @@ function formatCatalog(items = []) {
   }
 }
 
+const isSubscriptionActive = (user) => {
+  if (!user.isPro) return false;
+  if (!user.subscriptionExpires) return true;
+  return new Date() < new Date(user.subscriptionExpires);
+};
+
 const updateUserStatus = async (user) => {
-  if (
-    user.isPro &&
-    user.subscriptionExpires &&
-    new Date() > new Date(user.subscriptionExpires)
-  ) {
+  if (!isSubscriptionActive(user) && user.isPro) {
     user.isPro = false;
     await user.save();
   }
@@ -40,134 +35,131 @@ const updateUserStatus = async (user) => {
 
 const shouldResetMessages = (user) => {
   if (!user.messagesResetDate) return false;
-  return new Date() >= new Date(user.messagesResetDate);
+  const now = new Date();
+  return now >= new Date(user.messagesResetDate);
 };
 
 export async function aiReply(req, res) {
   try {
     const {
-      systemPrompt = "",
+      systemPrompt = "You are a helpful assistant.",
       message = "",
       contact = { name: "Client", isGroup: false },
       catalog = [],
       deviceId,
     } = req.body || {};
 
-    console.log(`[AI] Request: ${MODEL_NAME} | Device: ${deviceId}`);
-
-    // ========== 1. ПРОВЕРКА ЛИМИТОВ ==========
-    // Технический запрос классификатора содержит "JSON" в промпте. Его не лимитируем.
-    const isJsonRequest = systemPrompt.includes("JSON");
-
-    if (deviceId && !isJsonRequest) {
+    // ========== ПРОВЕРКА ЛИМИТА ==========
+    if (deviceId) {
       const user = await User.findOne({ where: { deviceId } });
+
       if (user) {
         const updatedUser = await updateUserStatus(user);
 
+        // Сброс счетчика раз в месяц
         if (shouldResetMessages(updatedUser)) {
+          const now = new Date();
           updatedUser.messagesThisMonth = 0;
           updatedUser.messagesResetDate = new Date(
-            Date.now() + 30 * 24 * 60 * 60 * 1000
+            now.getTime() + 30 * 24 * 60 * 60 * 1000
           );
           await updatedUser.save();
-          console.log(`🔄 Limits reset for: ${deviceId}`);
+          console.log(`🔄 Message counter reset for device: ${deviceId}`);
         }
 
+        // Лимит 50 сообщений для FREE
         if (!updatedUser.isPro) {
           const FREE_LIMIT = 50;
           if (updatedUser.messagesThisMonth >= FREE_LIMIT) {
-            console.log(`❌ Limit reached: ${deviceId}`);
-            return res.json({ limitReached: true, reply: null });
+            console.log(
+              `❌ Message limit reached: ${deviceId} (${updatedUser.messagesThisMonth})`
+            );
+            return res.json({
+              limitReached: true,
+              reply: null,
+              limit: {
+                used: updatedUser.messagesThisMonth,
+                total: FREE_LIMIT,
+                isPro: false,
+              },
+            });
           }
         }
+        console.log(`✅ Allowed: ${deviceId}`);
       }
     }
 
-    // ========== 2. ПОДГОТОВКА ДАННЫХ ==========
+    // ========== PROMPT ==========
     const cleanMessage = String(message ?? "").slice(0, 2000);
-    const catalogJson =
+
+    const combinedInstructions = `
+<system_configuration>
+STRICT RULES:
+- Detect the user's language and ALWAYS reply in that SAME language.
+- You are a friendly business assistant that can lightly joke and ask clarifying questions.
+- Use ONLY the facts and rules from BUSINESS CONTEXT and Catalog JSON.
+- Do NOT invent new addresses, phone numbers, prices, discounts, schedules, guarantees, or services that are not given.
+- If you cannot answer strictly using these facts, reply with an empty string ("") and nothing else.
+- Keep answers concise (max 150 characters), easy to read in chat.
+
+BUSINESS CONTEXT:
+${systemPrompt}
+</system_configuration>
+
+<context_data>
+Contact Name: ${contact?.name ?? "Client"}
+Is Group Chat: ${contact?.isGroup ? "Yes" : "No"}
+Catalog JSON: ${
       Array.isArray(catalog) && catalog.length > 0
         ? formatCatalog(catalog)
-        : "";
+        : "Empty"
+    }
+</context_data>
 
-    // ========== 3. ИНСТРУКЦИИ ==========
-    let finalSystemInstruction = "";
+<user_input>
+${cleanMessage}
+</user_input>
+    `.trim();
 
-    if (isJsonRequest) {
-      // Для классификатора
-      finalSystemInstruction = systemPrompt;
-    } else {
-      // Для ответов клиентам (Жесткая привязка к контексту)
-      finalSystemInstruction = `
-You are a smart business assistant.
-Your knowledge is STRICTLY limited to the "BUSINESS_DATA" below.
+    // ========== GROQ REQUEST ==========
+    console.log(`[AI] Requesting Groq: ${MODEL_NAME}...`);
 
-<BUSINESS_DATA>
-${systemPrompt}
+    const resp = await axios.post(
+      GROQ_API_URL,
+      {
+        model: MODEL_NAME,
+        messages: [{ role: "user", content: combinedInstructions }],
+        max_tokens: 1024,
+        temperature: 0.1,
+      },
+      {
+        timeout: 30000,
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-${catalogJson ? `CATALOG / PRICES:\n${catalogJson}` : ""}
-</BUSINESS_DATA>
+    let reply = resp?.data?.choices?.[0]?.message?.content?.trim() || "";
 
-RULES:
-1. **Source of Truth:** Answer ONLY using the provided BUSINESS_DATA.
-2. **Anti-Hallucination:** Do NOT invent addresses, prices, or services. If info is missing, say "I don't have that info".
-3. **Language:** Detect user's language and reply in the same language.
-4. **Tone:** Be professional and concise (max 2-3 sentences).
-5. **Safety:** If the user is rude, be polite.
-      `.trim();
+    // Спец-токен на молчание (на будущее, если вдруг используешь в промпте)
+    if (reply === "__SILENCE__") {
+      reply = "";
     }
 
-    // ========== 4. МОДЕЛЬ ==========
-    const model = genAI.getGenerativeModel({
-      model: MODEL_NAME,
-      systemInstruction: finalSystemInstruction,
-      // Отключаем лишнюю цензуру, чтобы не блокировал жалобы клиентов
-      safetySettings: [
-        {
-          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-          threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-          threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-          threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-          threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-        },
-      ],
-    });
-
-    // ========== 5. ЗАПРОС ==========
-    const generationConfig = {
-      maxOutputTokens: isJsonRequest ? 200 : 500,
-      temperature: isJsonRequest ? 0.1 : 0.3, // 0.3 для ответов - хороший баланс
-      responseMimeType: isJsonRequest ? "application/json" : "text/plain",
-    };
-
-    const userPrompt = isJsonRequest
-      ? cleanMessage
-      : `Client Name: ${contact?.name ?? "Client"}\nMessage: "${cleanMessage}"`;
-
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      generationConfig,
-    });
-
-    const response = await result.response;
-    let reply = response.text().trim();
-
-    // Чистка Markdown
-    if (!isJsonRequest && reply) {
-      reply = reply.replace(/\*\*/g, "").replace(/\*/g, "");
+    // Если пусто — AI сознательно выбрал молчание
+    if (!reply) {
+      console.log("[AI] 🤫 AI chose silence.");
     }
 
-    // ========== 6. СЧЕТЧИК ==========
-    if (deviceId && !isJsonRequest && reply.length > 0) {
+    // Жёстко ограничиваем длину ответа на бэке
+    if (reply && reply.length > 150) {
+      reply = reply.slice(0, 150).trim();
+    }
+
+    // ========== УВЕЛИЧИТЬ СЧЁТЧИК (ТОЛЬКО ЕСЛИ ОТВЕТИЛ) ==========
+    if (deviceId && reply && reply.length > 0) {
       const user = await User.findOne({ where: { deviceId } });
       if (user) {
         user.messagesThisMonth += 1;
@@ -175,26 +167,16 @@ RULES:
       }
     }
 
+    const isSilent = !reply || reply.length === 0;
+
     res.json({
       reply,
-      silence: !reply || reply.length === 0,
+      silence: isSilent,
     });
   } catch (e) {
-    console.error("[AI] Gemini Error:", e.message);
-
-    // Обработка ошибок безопасности
-    if (e.message?.includes("SAFETY") || e.message?.includes("blocked")) {
-      console.log("⚠️ Blocked by Safety Filters");
-      return res.json({ reply: "", silence: true });
-    }
-
-    // Обработка неверного имени модели (если 2.0 еще не доступна на твоем ключе)
-    if (e.message?.includes("models/")) {
-      console.error(
-        "⚠️ Invalid Model Name. Check if 'gemini-2.0-flash-exp' is valid."
-      );
-    }
-
-    res.status(500).json({ error: "AI Error" });
+    const status = e?.response?.status || 500;
+    const msg = e?.response?.data || { error: String(e?.message || e) };
+    console.error("[AI] Groq Error:", JSON.stringify(msg, null, 2));
+    res.status(status).json({ error: msg });
   }
 }
