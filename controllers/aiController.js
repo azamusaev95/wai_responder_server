@@ -3,7 +3,9 @@ import axios from "axios";
 import User from "../models/User.js";
 
 // ✅ Llama 3.3 70B (Самая умная на Groq)
-const MODEL_NAME = "llama-3.3-70b-versatile";
+// const MODEL_NAME = "llama-3.3-70b-versatile";
+const MODEL_NAME = "meta-llama/llama-4-scout-17b-16e-instruct";
+
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 function formatCatalog(items = []) {
